@@ -1,7 +1,7 @@
 # NexusMQ broker image.
 #   docker build -t nexusmq .
 #   docker run -p 5680:5680 -v nexusmq-data:/data -e NexusMQ__ApiKey=change-me nexusmq
-FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+FROM mcr.microsoft.com/dotnet/sdk:11.0 AS build
 WORKDIR /src
 COPY Directory.Build.props README.md ./
 COPY src/ src/
