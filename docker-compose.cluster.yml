@@ -1,0 +1,50 @@
+# Three NexusMQ servers forming a Raft cluster. A write is confirmed only once 2 of 3 have it.
+#   docker compose -f docker-compose.cluster.yml up -d --build
+# Clients:  new NexusClient("http://localhost:5680,http://localhost:5681,http://localhost:5682", key)
+#           nexusmq --url http://localhost:5680,http://localhost:5681,http://localhost:5682 --key change-me replication status
+# Change NEXUSMQ_API_KEY and NEXUSMQ_CLUSTER_SECRET before exposing anything. See docs/CLUSTER.md.
+x-cluster-env: &cluster
+  NexusMQ__ApiKey: ${NEXUSMQ_API_KEY:-change-me}
+  NexusMQ__Cluster__Secret: ${NEXUSMQ_CLUSTER_SECRET:-change-me-cluster}
+  NexusMQ__Cluster__Nodes__0__Id: n1
+  NexusMQ__Cluster__Nodes__0__Url: http://nexusmq-1:5680
+  NexusMQ__Cluster__Nodes__1__Id: n2
+  NexusMQ__Cluster__Nodes__1__Url: http://nexusmq-2:5680
+  NexusMQ__Cluster__Nodes__2__Id: n3
+  NexusMQ__Cluster__Nodes__2__Url: http://nexusmq-3:5680
+
+services:
+  nexusmq-1:
+    build: .
+    image: nexusmq:1.13.0
+    ports: ["5680:5680"]
+    volumes: [nexusmq-1-data:/data]
+    environment:
+      <<: *cluster
+      NexusMQ__Cluster__NodeId: n1
+    restart: unless-stopped
+
+  nexusmq-2:
+    image: nexusmq:1.13.0
+    depends_on: [nexusmq-1]
+    ports: ["5681:5680"]
+    volumes: [nexusmq-2-data:/data]
+    environment:
+      <<: *cluster
+      NexusMQ__Cluster__NodeId: n2
+    restart: unless-stopped
+
+  nexusmq-3:
+    image: nexusmq:1.13.0
+    depends_on: [nexusmq-1]
+    ports: ["5682:5680"]
+    volumes: [nexusmq-3-data:/data]
+    environment:
+      <<: *cluster
+      NexusMQ__Cluster__NodeId: n3
+    restart: unless-stopped
+
+volumes:
+  nexusmq-1-data:
+  nexusmq-2-data:
+  nexusmq-3-data:

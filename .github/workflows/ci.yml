@@ -1,0 +1,155 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  # Package IDs are <prefix>.Core/.Client/.AspNetCore/.Cli. Set the repository variable NEXUSMQ_PACKAGE_PREFIX to change it.
+  PACKAGE_PREFIX: ${{ vars.NEXUSMQ_PACKAGE_PREFIX || 'NexusMQ' }}
+
+jobs:
+  build-test:
+    name: Build & test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore
+        run: dotnet restore NexusMQ.sln
+
+      - name: Build
+        run: dotnet build NexusMQ.sln -c Release --no-restore
+
+      - name: Test
+        run: >
+          dotnet test tests/NexusMQ.Tests/NexusMQ.Tests.csproj -c Release --no-build
+          --logger "trx;LogFileName=results.trx"
+          --results-directory TestResults
+          --blame-hang-timeout 5m
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: test-results-${{ matrix.os }}
+          path: TestResults
+          if-no-files-found: ignore
+
+  live-regression:
+    name: Live regression (real servers)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      # Samples, CLI, access keys, rate limits, HTTPS, primary/standby failover, Raft leader kill, membership changes,
+      # minority refusal and benchmarks, each against real servers. Docker and workflow lint run in their own jobs.
+      - name: Run scripts/live-regression.sh
+        run: ONLY="samples cli keys https ha cluster bench" WORK="$RUNNER_TEMP/regression" ./scripts/live-regression.sh
+
+      - name: Upload server logs
+        if: failure()
+        uses: actions/upload-artifact@v5
+        with:
+          name: live-regression-logs
+          path: ${{ runner.temp }}/regression/*.log
+          if-no-files-found: ignore
+
+  pack:
+    name: Pack
+    needs: build-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Compute CI version
+        shell: bash
+        run: |
+          base=$(grep -oP '(?<=<Version>)[^<]+' Directory.Build.props)
+          echo "VERSION=${base}-ci.${{ github.run_number }}" >> "$GITHUB_ENV"
+
+      - name: Pack
+        shell: bash
+        run: |
+          for p in src/NexusMQ.Core src/NexusMQ.Client src/NexusMQ.AspNetCore src/NexusMQ.Cli; do
+            dotnet pack "$p" -c Release -o artifacts \
+              -p:Version="$VERSION" \
+              -p:NexusMQPackagePrefix="$PACKAGE_PREFIX" \
+              -p:RepositoryUrl="${{ github.server_url }}/${{ github.repository }}" \
+              -p:RepositoryCommit="${{ github.sha }}"
+          done
+
+      - name: Smoke-test the CLI tool package
+        shell: bash
+        run: |
+          dotnet tool install --tool-path ./tool "$PACKAGE_PREFIX.Cli" --version "$VERSION" --add-source ./artifacts
+          ./tool/nexusmq --version
+          ./tool/nexusmq help | head -5
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: packages
+          path: artifacts/*
+
+  docker:
+    name: Docker image builds
+    needs: build-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: nexusmq:ci
+
+      - name: Smoke-test the container
+        run: |
+          docker run -d --name mq -p 5680:5680 -e NexusMQ__ApiKey=ci nexusmq:ci
+          healthy=false
+          for _ in $(seq 1 30); do
+            if curl -fs http://localhost:5680/api/health; then echo; healthy=true; break; fi
+            sleep 1
+          done
+          if [ "$healthy" != true ]; then docker logs mq; exit 1; fi
+          curl -fs -H "X-Api-Key: ci" -X PUT http://localhost:5680/api/queues/smoke
+          curl -fs -H "X-Api-Key: ci" -H "Content-Type: application/json" -d '[{"body":"hello"}]' http://localhost:5680/api/send/smoke
+          curl -fs -H "X-Api-Key: ci" http://localhost:5680/api/stats | grep '"active":1'
+          docker logs mq | tail -20
+          docker rm -f mq

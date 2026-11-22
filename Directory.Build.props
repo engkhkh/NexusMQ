@@ -1,0 +1,41 @@
+<Project>
+  <!-- Shared settings for every project in the solution. -->
+  <PropertyGroup>
+    <Version>1.13.0</Version>
+    <!-- Package IDs are $(NexusMQPackagePrefix).Core / .Client / .AspNetCore / .Cli.
+         If "NexusMQ" is taken on nuget.org, change this (e.g. "Engkhkh.NexusMQ") or pass -p:NexusMQPackagePrefix=… -->
+    <NexusMQPackagePrefix Condition="'$(NexusMQPackagePrefix)' == ''">NexusMQ</NexusMQPackagePrefix>
+    <Authors>NexusMQ contributors</Authors>
+    <Company>NexusMQ</Company>
+    <Product>NexusMQ</Product>
+    <Copyright>Copyright (c) 2026 NexusMQ contributors</Copyright>
+    <PackageTags>messaging;message-broker;queue;rabbitmq;servicebus;pubsub;raft</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <RepositoryType>git</RepositoryType>
+    <!-- CI passes -p:RepositoryUrl=https://github.com/<owner>/<repo>; the project page defaults to it. -->
+    <PackageProjectUrl Condition="'$(PackageProjectUrl)' == '' and '$(RepositoryUrl)' != ''">$(RepositoryUrl)</PackageProjectUrl>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <!-- Only the libraries and the CLI tool are packable; apps, samples and tests stay unpacked. -->
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <!-- Reproducible builds on CI (GitHub Actions sets GITHUB_ACTIONS=true). -->
+  <PropertyGroup Condition="'$(GITHUB_ACTIONS)' == 'true'">
+    <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(MSBuildProjectName)' == 'NexusMQ.Core' Or '$(MSBuildProjectName)' == 'NexusMQ.Client' Or '$(MSBuildProjectName)' == 'NexusMQ.AspNetCore' Or '$(MSBuildProjectName)' == 'NexusMQ.Cli'">
+    <IsPackable>true</IsPackable>
+    <PackageId>$(NexusMQPackagePrefix)$(MSBuildProjectName.Substring(7))</PackageId>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(IsPackable)' == 'true'">
+    <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="\" Visible="false" />
+  </ItemGroup>
+</Project>

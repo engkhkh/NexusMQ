@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>nexusmq</AssemblyName>
+    <RootNamespace>NexusMQ.Cli</RootNamespace>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>nexusmq</ToolCommandName>
+    <Description>nexusmq command-line tool: send, peek, receive, listen, stats, create/delete entities, bindings, purge, resubmit and access keys.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\NexusMQ.Client\NexusMQ.Client.csproj" />
+  </ItemGroup>
+
+</Project>

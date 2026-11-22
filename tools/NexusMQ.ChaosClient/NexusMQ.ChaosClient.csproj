@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>nexusmq-chaos</AssemblyName>
+    <Description>Steady producer + consumer traffic for failover tests; reports lost and duplicated messages.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\NexusMQ.Client\NexusMQ.Client.csproj" />
+  </ItemGroup>
+</Project>

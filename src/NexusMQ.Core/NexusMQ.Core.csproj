@@ -1,0 +1,13 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Description>NexusMQ broker engine: queues, topics/subscriptions, RabbitMQ-style exchanges, sessions, SQL filters, dead-lettering and durable storage. Embed it with NexusMQ.AspNetCore.</Description>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="NexusMQ.Tests" />
+  </ItemGroup>
+</Project>

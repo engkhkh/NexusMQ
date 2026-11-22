@@ -1,0 +1,37 @@
+# Two NexusMQ servers: a primary and a standby with automatic failover.
+#   docker compose -f docker-compose.ha.yml up -d --build
+# Clients:  new NexusClient("http://localhost:5680,http://localhost:5682", key)
+#           nexusmq --url http://localhost:5680,http://localhost:5682 --key change-me replication status
+# Both servers must share the same ApiKey (config keys are not replicated; runtime keys are).
+# See docs/HA.md before relying on automatic failover (split-brain).
+x-common-env: &common
+  NexusMQ__ApiKey: ${NEXUSMQ_API_KEY:-change-me}
+
+services:
+  nexusmq-a:
+    build: .
+    image: nexusmq:1.13.0
+    ports: ["5680:5680"]
+    volumes: [nexusmq-a-data:/data]
+    environment:
+      <<: *common
+      NexusMQ__Replication__Role: Primary
+    restart: unless-stopped
+
+  nexusmq-b:
+    image: nexusmq:1.13.0
+    depends_on: [nexusmq-a]
+    ports: ["5682:5680"]
+    volumes: [nexusmq-b-data:/data]
+    environment:
+      <<: *common
+      NexusMQ__Replication__Role: Standby
+      NexusMQ__Replication__PrimaryUrl: http://nexusmq-a:5680
+      NexusMQ__Replication__PrimaryKey: ${NEXUSMQ_API_KEY:-change-me}
+      NexusMQ__Replication__AutoFailover: "true"
+      NexusMQ__Replication__FailoverAfterSeconds: "15"
+    restart: unless-stopped
+
+volumes:
+  nexusmq-a-data:
+  nexusmq-b-data:

@@ -1,0 +1,18 @@
+# HTTPS for the broker. Use together with docker-compose.yml:
+#   .\scripts\new-dev-cert.ps1                      (or put your real certificate at .\certs\nexusmq.pfx)
+#   $env:NEXUSMQ_CERT_PASSWORD = "change-me-cert"
+#   docker compose -f docker-compose.yml -f docker-compose.tls.yml up -d --build
+# Clients then use https://localhost:5681 (and wss:// for push, automatically).
+# Plain HTTP stays on 5680 inside the compose network for Prometheus. To stop publishing it to the host,
+# remove the "5680:5680" line in docker-compose.yml.
+services:
+  nexusmq:
+    ports:
+      - "5681:5681"
+    volumes:
+      - ./certs:/certs:ro
+    environment:
+      ASPNETCORE_HTTP_PORTS: "5680"
+      ASPNETCORE_HTTPS_PORTS: "5681"
+      Kestrel__Certificates__Default__Path: /certs/nexusmq.pfx
+      Kestrel__Certificates__Default__Password: ${NEXUSMQ_CERT_PASSWORD:-change-me-cert}

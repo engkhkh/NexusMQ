@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NexusMQ Dashboard</title>
+<style>
+  :root { --bg:#0f1420; --panel:#171e2e; --line:#26304a; --text:#e6e9f0; --muted:#8b95ad; --accent:#4f8cff; --ok:#38c172; --warn:#f6ad55; --bad:#ef5f5f; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.45 system-ui,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--text); }
+  header { display:flex; align-items:center; gap:12px; padding:14px 22px; border-bottom:1px solid var(--line); }
+  header h1 { font-size:18px; margin:0; } header span { color:var(--muted); }
+  main { display:grid; grid-template-columns: minmax(0, 2fr) minmax(300px, 1fr); gap:16px; padding:16px 22px; }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px; overflow-x:auto; }
+  h2 { font-size:14px; margin:0 0 10px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th { color:var(--muted); font-weight:500; }
+  td.num { text-align:right; font-variant-numeric:tabular-nums; }
+  .dl { color:var(--bad); font-weight:600; }
+  input, select, textarea { width:100%; background:#0d1220; color:var(--text); border:1px solid var(--line); border-radius:6px; padding:6px 8px; font:inherit; margin:3px 0 8px; }
+  textarea { min-height:70px; font-family:ui-monospace,Consolas,monospace; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:6px; padding:6px 12px; font:inherit; cursor:pointer; }
+  button.ghost { background:transparent; border:1px solid var(--line); color:var(--text); padding:3px 8px; }
+  .row { display:flex; gap:8px; } .row > * { flex:1; }
+  .stack > section + section { margin-top:16px; }
+  pre { background:#0d1220; border:1px solid var(--line); border-radius:6px; padding:10px; max-height:420px; overflow:auto; font-size:12px; }
+  #toast { position:fixed; bottom:16px; right:16px; background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px 14px; display:none; }
+  .tag:empty { display:none; }
+  .tag { font-size:11px; padding:1px 6px; border-radius:10px; background:#24324f; color:#9fc1ff; }
+  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; vertical-align:middle; }
+  .banner { background:#2a2414; border:1px solid #5a4a1c; border-radius:8px; padding:8px 12px; margin-bottom:10px; }
+  .banner a { color:var(--accent); }
+  .muted { color:var(--muted); }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header><h1>NexusMQ</h1><span>RabbitMQ-style routing · Service Bus-style queues &amp; topics</span><span id="roleBadge" class="tag"></span><a id="metricsLink" style="margin-left:auto;color:var(--accent)" target="_blank">Prometheus metrics</a></header>
+<main>
+  <div class="stack">
+    <section id="clusterSection" style="display:none">
+      <h2>Servers <span id="clusterMode" class="tag"></span></h2>
+      <div id="clusterBanner" class="banner" style="display:none"></div>
+      <div id="clusterSummary" class="muted" style="margin-bottom:8px"></div>
+      <table><thead id="clusterHead"></thead><tbody id="cluster"></tbody></table>
+      <div id="clusterAdd" style="display:none;margin-top:10px">
+        <div class="row">
+          <div><label>New server id</label><input id="cId" placeholder="n4"></div>
+          <div style="flex:2"><label>URL the other servers use to reach it</label><input id="cUrl" placeholder="http://mq-4:5680"></div>
+        </div>
+        <button id="cAddBtn" onclick="addMember()">Add server</button>
+        <span class="muted" style="margin-left:8px">Start it first with <code>Cluster:Join=true</code> and the same cluster secret. It catches up as a learner, then votes.</span>
+      </div>
+    </section>
+    <section>
+      <h2>Entities</h2>
+      <table>
+        <thead><tr><th>Path</th><th>Kind</th><th class="num">Active</th><th class="num">Locked</th><th class="num">Scheduled</th><th class="num">Deferred</th><th class="num">Dead-letter</th><th class="num">Sessions</th><th class="num">In/s</th><th class="num">Out/s</th><th class="num">Enqueued</th><th></th></tr></thead>
+        <tbody id="stats"></tbody>
+      </table>
+    </section>
+    <section>
+      <h2>Exchanges &amp; bindings</h2>
+      <table><thead><tr><th>Exchange</th><th>Type</th><th>Bindings (key → destination)</th></tr></thead><tbody id="exchanges"></tbody></table>
+    </section>
+    <section>
+      <h2>Messages <span id="peekPath" class="tag"></span> <button class="ghost" id="peekReload" style="display:none" onclick="peek(currentPath)">reload</button></h2>
+      <table>
+        <thead><tr><th>#</th><th>Subject</th><th>State</th><th class="num">Tries</th><th>Dead-letter reason</th><th>Body</th><th></th></tr></thead>
+        <tbody id="msgs"><tr><td colspan="7" style="color:var(--muted)">Click "peek" or "DLQ" on an entity.</td></tr></tbody>
+      </table>
+      <pre id="msgDetail" style="display:none"></pre>
+    </section>
+    <section id="auditSection">
+      <h2>Recent activity</h2>
+      <table><thead><tr><th>Time</th><th>Result</th><th>Who</th><th>Action</th><th>Target</th></tr></thead><tbody id="audit"></tbody></table>
+    </section>
+  </div>
+  <div class="stack">
+    <section>
+      <h2>Send message</h2>
+      <label>Destination (queue, topic, or exchanges/name)</label><input id="sendPath" placeholder="orders">
+      <div class="row"><div><label>Subject / routing key</label><input id="sendSubject"></div><div><label>Delay (s)</label><input id="sendDelay" type="number" min="0" value="0"></div></div>
+      <label>Properties (JSON)</label><input id="sendProps" placeholder='{"region":"eu"}'>
+      <label>Body</label><textarea id="sendBody">{"hello":"world"}</textarea>
+      <button onclick="send()">Send</button>
+    </section>
+    <section>
+      <h2>Create</h2>
+      <label>Queue</label><div class="row"><input id="qName" placeholder="orders"><button onclick="createQueue()">Create</button></div>
+      <label>Topic</label><div class="row"><input id="tName" placeholder="events"><button onclick="createTopic()">Create</button></div>
+      <label>Subscription (topic / name / subject pattern)</label>
+      <div class="row"><input id="sTopic" placeholder="events"><input id="sName" placeholder="billing"><input id="sPattern" placeholder="order.*"></div>
+      <button onclick="createSub()">Create subscription</button>
+      <label style="display:block;margin-top:10px">Exchange</label>
+      <div class="row"><input id="eName" placeholder="logs"><select id="eType"><option>Direct</option><option>Fanout</option><option>Topic</option><option>Headers</option></select><button onclick="createExchange()">Create</button></div>
+      <label>Binding (exchange / routing key / destination)</label>
+      <div class="row"><input id="bEx" placeholder="logs"><input id="bKey" placeholder="error.#"><input id="bDest" placeholder="orders"></div>
+      <button onclick="bind()">Bind</button>
+    </section>
+    <section id="keysSection">
+      <h2>Access keys</h2>
+      <table><thead><tr><th>Name</th><th>Rights</th><th>Entities</th><th>Limit</th><th>Last used</th><th></th></tr></thead><tbody id="keys"></tbody></table>
+      <label style="display:block;margin-top:10px">New key name</label><input id="kName" placeholder="orders-api">
+      <div class="row" style="margin:4px 0 8px">
+        <label><input type="checkbox" id="kSend" style="width:auto"> Send</label>
+        <label><input type="checkbox" id="kListen" style="width:auto"> Listen</label>
+        <label><input type="checkbox" id="kManage" style="width:auto"> Manage</label>
+        <label><input type="checkbox" id="kMonitor" style="width:auto"> Monitor</label>
+      </div>
+      <label>Entities (comma separated, empty = all)</label><input id="kEntities" placeholder="orders, events/subscriptions/billing, tenant-*">
+      <label>Requests per second (empty = unlimited)</label><input id="kRps" type="number" min="1" placeholder="e.g. 100">
+      <button onclick="createKey()">Create key</button>
+      <pre id="keySecret" style="display:none"></pre>
+    </section>
+  </div>
+</main>
+<div id="toast"></div>
+<script>
+const $ = id => document.getElementById(id);
+const enc = p => p.split('/').map(encodeURIComponent).join('/');
+function toast(msg, bad) { const t = $('toast'); t.textContent = msg; t.style.borderColor = bad ? 'var(--bad)' : 'var(--ok)'; t.style.display = 'block'; clearTimeout(t._h); t._h = setTimeout(() => t.style.display = 'none', 3000); }
+const API = '__NEXUSMQ_API__';
+document.getElementById('metricsLink').href = API + '/metrics';
+let apiKey = null; try { apiKey = sessionStorage.getItem('nexusmq-key'); } catch {}
+async function call(method, url, body, retried) {
+  url = API + url.replace(/^\/api/, '');
+  const headers = {}; if (body !== undefined) headers['Content-Type'] = 'application/json'; if (apiKey) headers['X-Api-Key'] = apiKey;
+  const r = await fetch(url, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined });
+  if ((r.status === 401 || r.status === 403) && !retried) {
+    apiKey = prompt('NexusMQ API key'); try { sessionStorage.setItem('nexusmq-key', apiKey || ''); } catch {}
+    if (apiKey) return call(method, url.replace(API, '/api'), body, true);
+  }
+  const text = await r.text(); const data = text ? JSON.parse(text) : null;
+  if (!r.ok) { const err = new Error(data?.message || r.statusText); err.status = r.status; throw err; }
+  return data;
+}
+const prev = {}; let rates = {};
+function computeRates(stats) {
+  const now = performance.now(), next = {};
+  for (const s of stats) {
+    const p = prev[s.path];
+    next[s.path] = p ? { in: Math.max(0, (s.totalEnqueued - p.e) * 1000 / (now - p.t)), out: Math.max(0, (s.totalCompleted - p.c) * 1000 / (now - p.t)) } : null;
+    prev[s.path] = { e: s.totalEnqueued, c: s.totalCompleted, t: now };
+  }
+  rates = next;
+}
+function rate(s, k) { const r = rates[s.path]; return r ? (r[k] >= 10 ? Math.round(r[k]) : r[k].toFixed(1)) : '–'; }
+async function refresh() {
+  if (!serving) return;
+  try {
+    const [stats, topo] = await Promise.all([call('GET', '/api/stats'), call('GET', '/api/topology')]);
+    computeRates(stats);
+    $('stats').innerHTML = stats.map(s => `<tr><td>${s.path}</td><td><span class="tag">${s.kind}</span></td>
+      <td class="num">${s.active}</td><td class="num">${s.locked}</td><td class="num">${s.scheduled}</td><td class="num">${s.deferred}</td>
+      <td class="num ${s.deadLetter ? 'dl' : ''}">${s.deadLetter}</td><td class="num">${s.lockedSessions}</td><td class="num">${rate(s, 'in')}</td><td class="num">${rate(s, 'out')}</td><td class="num">${s.totalEnqueued}</td>
+      <td><button class="ghost" onclick="peek('${s.path}')">peek</button> <button class="ghost" onclick="peek('${s.path}/$deadletter')">DLQ</button>
+      <button class="ghost" onclick="resubmit('${s.path}')">resubmit DLQ</button> <button class="ghost" onclick="purge('${s.path}')">purge</button></td></tr>`).join('')
+      || '<tr><td colspan="12" style="color:var(--muted)">No queues or subscriptions yet.</td></tr>';
+    $('exchanges').innerHTML = topo.exchanges.map(e => `<tr><td>${e.name}</td><td><span class="tag">${e.type}</span></td><td>${
+      topo.bindings.filter(b => b.exchange.toLowerCase() === e.name.toLowerCase()).map(b => `${b.routingKey || '∅'} → ${b.destination}`).join('<br>') || '—'}</td></tr>`).join('')
+      || '<tr><td colspan="3" style="color:var(--muted)">No exchanges yet.</td></tr>';
+  } catch (e) {
+    if (e.status === 503) { setServing(false); return; } // follower or standby: the Servers panel explains where to go
+    toast(e.message, true);
+  }
+}
+function decode(b64) { try { return new TextDecoder().decode(Uint8Array.from(atob(b64), c => c.charCodeAt(0))); } catch { return b64; } }
+let currentPath = null, currentMsgs = [];
+const esc = t => String(t ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+async function peek(path) {
+  try {
+    currentPath = path;
+    currentMsgs = await call('GET', `/api/peek/${enc(path)}?max=100`);
+    $('peekPath').textContent = path; $('peekReload').style.display = ''; $('msgDetail').style.display = 'none';
+    const isDlq = path.endsWith('/$deadletter');
+    $('msgs').innerHTML = currentMsgs.map((m, i) => `<tr>
+      <td>${m.sequenceNumber}</td><td>${esc(m.subject)}</td><td><span class="tag">${m.state}</span></td><td class="num">${m.deliveryCount}</td>
+      <td class="${m.deadLetterReason ? 'dl' : ''}">${esc(m.deadLetterReason)}</td>
+      <td style="max-width:260px;overflow:hidden;text-overflow:ellipsis">${esc(decode(m.bodyBase64).slice(0, 80))}</td>
+      <td><button class="ghost" onclick="showMsg(${i})">view</button>
+          <button class="ghost" onclick="resend(${m.sequenceNumber})">${isDlq ? 'resubmit' : 'resend'}</button>
+          <button class="ghost" onclick="deleteMsg(${m.sequenceNumber})">delete</button></td></tr>`).join('')
+      || '<tr><td colspan="7" style="color:var(--muted)">(empty)</td></tr>';
+  } catch (e) { toast(e.message, true); }
+}
+function showMsg(i) {
+  const m = currentMsgs[i], box = $('msgDetail');
+  let body = decode(m.bodyBase64); try { body = JSON.parse(body); } catch {}
+  box.style.display = 'block';
+  box.textContent = JSON.stringify({ ...m, bodyBase64: undefined, body }, null, 2);
+}
+async function resend(seq) {
+  const isDlq = currentPath.endsWith('/$deadletter');
+  const to = prompt(isDlq ? `Resubmit #${seq} to (empty = where it failed):` : `Send a copy of #${seq} to (empty = same entity):`, '');
+  if (to === null) return;
+  try {
+    const r = await call('POST', `/api/messages/resend/${enc(currentPath)}?seq=${seq}${to ? '&to=' + encodeURIComponent(to) : ''}`);
+    toast(`Resent to ${r.delivered} destination(s)`); peek(currentPath); refresh();
+  } catch (e) { toast(e.message, true); }
+}
+async function deleteMsg(seq) {
+  if (!confirm(`Delete message #${seq} from ${currentPath}?`)) return;
+  try { await call('DELETE', `/api/messages/${enc(currentPath)}?seq=${seq}`); toast('Deleted'); peek(currentPath); refresh(); }
+  catch (e) { toast(e.message, true); }
+}
+async function loadAudit() {
+  const headers = apiKey ? { 'X-Api-Key': apiKey } : {};
+  const r = await fetch(API + '/audit?max=15', { headers });
+  if (!r.ok) { $('auditSection').style.display = 'none'; return; }
+  $('auditSection').style.display = '';
+  const rows = await r.json();
+  $('audit').innerHTML = rows.map(e => `<tr><td>${new Date(e.timeUtc).toLocaleTimeString()}</td>
+    <td class="${e.result === 'ok' ? '' : 'dl'}">${esc(e.result)}</td><td>${esc(e.actor)}</td><td>${esc(e.action)}</td><td>${esc(e.target)}</td></tr>`).join('')
+    || '<tr><td colspan="5" style="color:var(--muted)">No management actions yet.</td></tr>';
+}
+async function purge(path) { if (!confirm(`Purge all messages in ${path}?`)) return; try { const r = await call('DELETE', `/api/messages/${enc(path)}`); toast(`Purged ${r.purged}`); refresh(); } catch (e) { toast(e.message, true); } }
+async function resubmit(path) { try { const r = await call('POST', `/api/resubmit/${enc(path)}`); toast(`Resubmitted ${r.resubmitted}`); refresh(); } catch (e) { toast(e.message, true); } }
+async function send() {
+  try {
+    const delay = +$('sendDelay').value || 0;
+    const msg = { subject: $('sendSubject').value || null, body: $('sendBody').value, contentType: 'application/json',
+      properties: $('sendProps').value ? JSON.parse($('sendProps').value) : null,
+      scheduledEnqueueTimeUtc: delay ? new Date(Date.now() + delay * 1000).toISOString() : null };
+    const r = await call('POST', `/api/send/${enc($('sendPath').value)}`, [msg]);
+    toast(`Sent · delivered to ${r.delivered} destination(s)`); refresh();
+  } catch (e) { toast(e.message, true); }
+}
+async function loadKeys() {
+  const headers = apiKey ? { 'X-Api-Key': apiKey } : {};
+  const r = await fetch(API + '/keys', { headers });
+  if (!r.ok) { $('keysSection').style.display = 'none'; return; }  // needs a broker-wide Manage key
+  $('keysSection').style.display = '';
+  const keys = await r.json();
+  $('keys').innerHTML = keys.map(k => `<tr><td>${k.name}</td><td>${k.rights}</td><td>${k.entities.length ? k.entities.join(', ') : '*'}</td><td>${k.requestsPerSecond ? k.requestsPerSecond + '/s' : '–'}</td>
+    <td>${k.lastUsedUtc ? new Date(k.lastUsedUtc).toLocaleTimeString() : '–'}</td>
+    <td>${k.source === 'api' ? `<button class="ghost" onclick="rotateKey('${k.name}')">rotate</button> <button class="ghost" onclick="deleteKey('${k.name}')">delete</button>` : '<span class="tag">config</span>'}</td></tr>`).join('')
+    || '<tr><td colspan="6" style="color:var(--muted)">No keys: the broker is open (development mode). The first key must include Manage.</td></tr>';
+}
+function showSecret(r) {
+  const box = $('keySecret'); box.style.display = 'block';
+  box.textContent = `Key "${r.key.name}" secret (shown only once, copy it now):\n\n${r.secret}`;
+}
+async function createKey() {
+  try {
+    const rights = ['Send', 'Listen', 'Manage', 'Monitor'].filter(x => $('k' + x).checked).join(', ');
+    const entities = $('kEntities').value.split(',').map(x => x.trim()).filter(x => x);
+    const wasOpen = !apiKey;
+    const rps = +$('kRps').value || null;
+    const r = await call('POST', '/api/keys', { name: $('kName').value, rights: rights || 'None', entities, requestsPerSecond: rps });
+    showSecret(r);
+    if (wasOpen && rights.includes('Manage')) { apiKey = r.secret; try { sessionStorage.setItem('nexusmq-key', apiKey); } catch {} }
+    toast('Key created'); loadKeys();
+  } catch (e) { toast(e.message, true); }
+}
+async function rotateKey(name) {
+  const grace = prompt(`Rotate "${name}". Keep the old secret working for how many seconds?`, '300');
+  if (grace === null) return;
+  try { const r = await call('POST', `/api/keys/${encodeURIComponent(name)}/rotate?graceSeconds=${+grace || 0}`); showSecret(r); loadKeys(); }
+  catch (e) { toast(e.message, true); }
+}
+async function deleteKey(name) {
+  if (!confirm(`Delete key "${name}"? Apps using it will stop working.`)) return;
+  try { await call('DELETE', `/api/keys/${encodeURIComponent(name)}`); toast('Key deleted'); loadKeys(); } catch (e) { toast(e.message, true); }
+}
+async function createQueue() { try { await call('PUT', `/api/queues/${encodeURIComponent($('qName').value)}`); toast('Queue created'); refresh(); } catch (e) { toast(e.message, true); } }
+async function createTopic() { try { await call('PUT', `/api/topics/${encodeURIComponent($('tName').value)}`); toast('Topic created'); refresh(); } catch (e) { toast(e.message, true); } }
+async function createSub() {
+  try {
+    const pattern = $('sPattern').value;
+    await call('PUT', `/api/topics/${encodeURIComponent($('sTopic').value)}/subscriptions/${encodeURIComponent($('sName').value)}`,
+      { rules: pattern ? [{ name: 'pattern', subjectPattern: pattern }] : null });
+    toast('Subscription created'); refresh();
+  } catch (e) { toast(e.message, true); }
+}
+async function createExchange() { try { await call('PUT', `/api/exchanges/${encodeURIComponent($('eName').value)}`, { type: $('eType').value }); toast('Exchange created'); refresh(); } catch (e) { toast(e.message, true); } }
+async function bind() { try { await call('POST', '/api/bindings', { exchange: $('bEx').value, routingKey: $('bKey').value, destination: $('bDest').value }); toast('Bound'); refresh(); } catch (e) { toast(e.message, true); } }
+async function loadRole() {
+  try { const h = await (await fetch(API + '/health')).json(); $('roleBadge').textContent = h.role || ''; $('roleBadge').style.background = h.role === 'Standby' ? '#5a3b12' : '#1f4d33'; } catch {}
+}
+// ------------------------------------------------------------------ servers (Raft cluster or primary/standby)
+let serving = true; // false on a follower/standby: entity panels would only get 503s
+function ago(ms) { return ms == null ? 'never' : ms < 1000 ? `${ms} ms` : ms < 60000 ? `${(ms / 1000).toFixed(1)} s` : `${Math.round(ms / 60000)} min`; }
+function health(ms) { // a peer answers every heartbeat (250 ms by default); the election timeout is 1.5 s
+  if (ms == null || ms > 5000) return ['var(--bad)', 'unreachable'];
+  if (ms > 1500) return ['var(--warn)', 'slow'];
+  return ['var(--ok)', 'ok'];
+}
+function dashboardOn(url) { return url ? url.replace(/\/$/, '') + location.pathname : null; }
+function showBanner(html) { const b = $('clusterBanner'); b.style.display = html ? '' : 'none'; b.innerHTML = html || ''; }
+function setServing(on) {
+  if (serving === on) return;
+  serving = on;
+  for (const id of ['stats', 'exchanges']) { const t = $(id); if (t && !on) t.innerHTML = '<tr><td colspan="12" class="muted">This server is not active: open the leader\'s dashboard (see Servers).</td></tr>'; }
+  if (on) refresh();
+}
+async function loadCluster() {
+  const headers = apiKey ? { 'X-Api-Key': apiKey } : {};
+  let st;
+  try {
+    const r = await fetch(API + '/replication/status', { headers });
+    if (!r.ok) { $('clusterSection').style.display = 'none'; return; } // needs a Monitor (or Manage) key
+    st = await r.json();
+  } catch { return; }
+  const c = st.cluster;
+  if (!c && st.role === 'Primary' && !(st.standbys || []).length && !st.promotedUtc) { $('clusterSection').style.display = 'none'; setServing(true); return; }
+  $('clusterSection').style.display = '';
+  if (c) renderRaft(st, c); else renderPair(st);
+}
+function renderRaft(st, c) {
+  $('clusterMode').textContent = 'Raft cluster';
+  const leading = c.role === 'Leader';
+  setServing(leading && c.leaderReady);
+  $('clusterSummary').innerHTML = `This server: <b>${esc(c.nodeId)}</b> · ${esc(c.role)}${c.isVoter ? '' : ' (not a voter)'} · term ${c.term} ·
+    log ${c.lastLogIndex} · committed ${c.commitIndex} · applied ${c.lastApplied}`;
+  $('clusterAdd').style.display = leading ? '' : 'none';
+  $('clusterHead').innerHTML = '<tr><th>Server</th><th>URL</th><th>Role</th><th>Health</th><th class="num">Behind</th><th>Last answer</th><th></th></tr>';
+  const member = c.members.some(m => m.id === c.nodeId) || c.learners.some(m => m.id === c.nodeId);
+  if (!leading && !member) {
+    // Removed from the cluster, or started in join mode and not added yet: no leader will contact this server.
+    const others = c.members.map(m => m.url && `<a href="${esc(dashboardOn(m.url))}">${esc(m.id)}</a>`).filter(x => x).join(', ');
+    showBanner(c.members.length
+      ? `This server (<b>${esc(c.nodeId)}</b>) is <b>not a member</b> of the cluster: it was removed, so it gets no data and takes no part in votes.
+         Shut it down, or add it back from a member's dashboard: ${others}.`
+      : `This server (<b>${esc(c.nodeId)}</b>) is waiting to join: add it from the leader's dashboard (<b>Add server</b>) with this server's URL.`);
+    $('cluster').innerHTML = c.members.map(m => `<tr><td>${esc(m.id)}</td><td>${esc(m.url || '')}</td><td>Voter</td>
+      <td class="muted">–</td><td class="num muted">–</td><td class="muted">–</td><td></td></tr>`).join('');
+    return;
+  }
+  if (!leading) {
+    const link = dashboardOn(st.leaderUrl);
+    showBanner(link
+      ? `This server is a <b>${esc(c.role.toLowerCase())}</b>: clients are sent to the leader <b>${esc(c.leaderId)}</b>. Open the <a href="${esc(link)}">leader's dashboard</a> to manage messages and servers.`
+      : 'No leader right now: an election is running (it usually takes 1–3 s). Writes wait until a leader is elected.');
+    $('cluster').innerHTML = c.members.map(m => `<tr><td>${esc(m.id)}${m.id === c.nodeId ? ' <span class="tag">this</span>' : ''}</td><td>${esc(m.url || '')}</td>
+      <td>${m.id === c.leaderId ? '<b>Leader</b>' : 'Voter'}</td><td class="muted">–</td><td class="num muted">–</td><td class="muted">–</td><td></td></tr>`).join('');
+    return;
+  }
+  showBanner(c.leaderReady ? '' : 'Just elected: finishing the hand-over (applying the log) before serving clients.');
+  const row = (m, role) => {
+    const self = m.id === c.nodeId;
+    const behind = self ? 0 : Math.max(0, c.lastLogIndex - (c.peerMatchIndex[m.id] ?? 0));
+    const ms = self ? 0 : c.peerLastContactMs[m.id];
+    const [color, label] = self ? ['var(--ok)', 'ok'] : health(ms);
+    const action = role === 'Learner' ? '<span class="muted">catching up…</span>'
+      : `<button class="ghost" data-id="${esc(m.id)}" onclick="removeMember(this.dataset.id, ${self})">remove</button>`;
+    return `<tr><td>${esc(m.id)}${self ? ' <span class="tag">this</span>' : ''}</td><td>${esc(m.url || '')}</td><td>${self ? '<b>Leader</b>' : role}</td>
+      <td><span class="dot" style="background:${color}"></span>${label}</td><td class="num">${behind}</td><td>${self ? '–' : ago(ms)}</td><td>${action}</td></tr>`;
+  };
+  const voters = c.members.length, majority = Math.floor(voters / 2) + 1;
+  const healthy = c.members.filter(m => m.id === c.nodeId || health(c.peerLastContactMs[m.id])[1] !== 'unreachable').length;
+  $('cluster').innerHTML = [...c.members.map(m => row(m, 'Follower')), ...c.learners.map(m => row(m, 'Learner'))].join('');
+  $('clusterSummary').innerHTML += ` · <b style="color:${healthy < majority ? 'var(--bad)' : healthy === majority && voters > 1 ? 'var(--warn)' : 'var(--ok)'}">${healthy}/${voters} voters reachable</b>
+    (majority ${majority}; it can lose ${Math.max(0, healthy - majority)} more)`;
+}
+function renderPair(st) {
+  $('clusterMode').textContent = 'Primary + standby';
+  $('clusterAdd').style.display = 'none';
+  $('clusterHead').innerHTML = '<tr><th>Server</th><th>Role</th><th class="num">Position</th><th class="num">Behind</th><th>Last contact</th></tr>';
+  if (st.role === 'Standby') {
+    setServing(false);
+    const link = dashboardOn(st.primaryUrl);
+    showBanner(`This server is the <b>standby</b>: it copies the primary and takes over ${st.autoFailover ? 'automatically' : 'when promoted'}.` +
+      (link ? ` Open the <a href="${esc(link)}">primary's dashboard</a> to manage messages.` : ''));
+    const behind = st.primaryPosition != null ? Math.max(0, st.primaryPosition - st.position) : '–';
+    const [color, label] = st.connectedToPrimary ? health(st.secondsSinceContact * 1000) : ['var(--bad)', 'disconnected'];
+    $('clusterSummary').innerHTML = `Auto-failover: ${st.autoFailover ? 'on' : 'off'}`;
+    $('cluster').innerHTML = `<tr><td>${esc(st.primaryUrl || '?')}</td><td>Primary</td><td class="num">${st.primaryPosition ?? '–'}</td><td class="num">–</td><td>–</td></tr>
+      <tr><td>this server</td><td>Standby</td><td class="num">${st.position}</td><td class="num">${behind}</td>
+      <td><span class="dot" style="background:${color}"></span>${label} · ${st.secondsSinceContact != null ? ago(st.secondsSinceContact * 1000) : 'never'}</td></tr>`;
+    return;
+  }
+  setServing(true);
+  showBanner(st.standbys.length ? '' : 'No standby is connected: this server runs alone until one connects.');
+  $('clusterSummary').innerHTML = st.promotedUtc ? `Promoted to primary at ${new Date(st.promotedUtc).toLocaleString()}` : '';
+  $('cluster').innerHTML = `<tr><td>this server</td><td><b>Primary</b></td><td class="num">${st.position}</td><td class="num">0</td><td>–</td></tr>` +
+    st.standbys.map(s => {
+      const ms = Date.now() - new Date(s.lastSentUtc).getTime(); const [color, label] = health(ms);
+      return `<tr><td>${esc(s.remoteIp || 'standby')}</td><td>Standby</td><td class="num">${s.sentPosition}</td><td class="num">${Math.max(0, st.position - s.sentPosition)}</td>
+        <td><span class="dot" style="background:${color}"></span>${label} · ${ago(ms)}</td></tr>`;
+    }).join('');
+}
+async function addMember() {
+  const id = $('cId').value.trim(), url = $('cUrl').value.trim();
+  if (!id || !url) { toast('Give the new server an id and a URL', true); return; }
+  const btn = $('cAddBtn'); btn.disabled = true; btn.textContent = 'Adding… (catching up)';
+  try { await call('POST', '/api/cluster/members', { id, url }); toast(`Server ${id} joined the cluster`); $('cId').value = $('cUrl').value = ''; }
+  catch (e) { toast(e.message, true); }
+  finally { btn.disabled = false; btn.textContent = 'Add server'; loadCluster(); }
+}
+async function removeMember(id, self) {
+  const msg = self
+    ? `Remove "${id}" (this server, the current leader) from the cluster?\n\nIt hands over to another server and stops being a member. Shut it down afterwards.`
+    : `Remove "${id}" from the cluster?\n\nShut that server down afterwards. The cluster must keep a majority while you do this.`;
+  if (!confirm(msg)) return;
+  try { await call('DELETE', `/api/cluster/members/${encodeURIComponent(id)}`); toast(`Server ${id} removed`); }
+  catch (e) { toast(e.message, true); }
+  loadCluster();
+}
+loadCluster(); setInterval(loadCluster, 2000);
+loadRole(); setInterval(loadRole, 5000);
+refresh(); setInterval(refresh, 2000);
+loadKeys(); setInterval(loadKeys, 10000);
+loadAudit(); setInterval(loadAudit, 5000);
+</script>
+</body>
+</html>

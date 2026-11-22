@@ -1,0 +1,48 @@
+# NexusMQ + Prometheus + Grafana.
+#   docker compose up -d --build
+#   Broker + dashboard: http://localhost:5680   (master key: NEXUSMQ_API_KEY, default "change-me")
+#   Prometheus:         http://localhost:9090
+#   Grafana:            http://localhost:3000   (admin / admin)  → dashboard "NexusMQ"
+# Change the keys before exposing anything beyond your machine. The metrics key must match deploy/prometheus/prometheus.yml.
+services:
+  nexusmq:
+    build: .
+    image: nexusmq:1.13.0
+    ports:
+      - "5680:5680"
+    volumes:
+      - nexusmq-data:/data
+    environment:
+      NexusMQ__ApiKey: ${NEXUSMQ_API_KEY:-change-me}
+      NexusMQ__AccessKeys__0__Name: prometheus
+      NexusMQ__AccessKeys__0__Key: metrics-key
+      NexusMQ__AccessKeys__0__Rights: Monitor
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      - nexusmq
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/nexusmq.json
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  nexusmq-data:

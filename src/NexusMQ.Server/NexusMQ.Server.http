@@ -1,0 +1,121 @@
+### NexusMQ API samples — run these from Visual Studio (click "Send request" above each block).
+@host = http://localhost:5680
+
+### Create a queue (RabbitMQ queue / Azure queue)
+PUT {{host}}/api/queues/orders
+Content-Type: application/json
+
+{ "lockDuration": "00:00:30", "maxDeliveryCount": 5 }
+
+### Send to the queue
+POST {{host}}/api/send/orders
+Content-Type: application/json
+
+[ { "subject": "order.created", "body": "{\"id\": 42}", "contentType": "application/json", "properties": { "region": "eu" } } ]
+
+### Receive with peek-lock (waits up to 10 s)
+POST {{host}}/api/receive/orders?max=5&wait=10&mode=PeekLock
+
+### Complete (ack) — paste the lockToken from the receive response
+POST {{host}}/api/settle/orders
+Content-Type: application/json
+
+{ "lockToken": "00000000-0000-0000-0000-000000000000", "action": "Complete" }
+
+### Peek dead-letter queue
+GET {{host}}/api/peek/orders/$deadletter
+
+### Topic + filtered subscription (Azure Service Bus style)
+PUT {{host}}/api/topics/events
+
+###
+PUT {{host}}/api/topics/events/subscriptions/billing
+Content-Type: application/json
+
+{ "rules": [ { "name": "orders-only", "subjectPattern": "order.#" } ] }
+
+###
+POST {{host}}/api/send/events
+Content-Type: application/json
+
+[ { "subject": "order.paid", "body": "paid!" } ]
+
+###
+POST {{host}}/api/receive/events/subscriptions/billing?max=10&mode=ReceiveAndDelete
+
+### Topic exchange (RabbitMQ style)
+PUT {{host}}/api/exchanges/logs
+Content-Type: application/json
+
+{ "type": "Topic" }
+
+###
+PUT {{host}}/api/queues/errors
+
+###
+POST {{host}}/api/bindings
+Content-Type: application/json
+
+{ "exchange": "logs", "routingKey": "*.error", "destination": "errors" }
+
+###
+POST {{host}}/api/send/exchanges/logs?routingKey=billing.error
+Content-Type: application/json
+
+[ { "body": "payment gateway timeout" } ]
+
+### Stats & topology
+GET {{host}}/api/stats
+
+###
+GET {{host}}/api/topology
+
+### ---------------- Phase 2: SQL-filtered subscription
+PUT {{host}}/api/topics/events/subscriptions/big-eu
+Content-Type: application/json
+
+{ "rules": [ { "name": "big-eu", "sqlFilter": "region = 'eu' AND amount > 100" } ] }
+
+###
+POST {{host}}/api/send/events
+Content-Type: application/json
+
+[ { "subject": "order.paid", "body": "big one", "properties": { "region": "eu", "amount": "250" } } ]
+
+### ---------------- Phase 2: sessions (ordered per SessionId)
+PUT {{host}}/api/queues/shipments
+Content-Type: application/json
+
+{ "requiresSession": true }
+
+###
+POST {{host}}/api/send/shipments
+Content-Type: application/json
+
+[ { "sessionId": "order-42", "body": "picked" }, { "sessionId": "order-42", "body": "packed" } ]
+
+### Accept the next session (copy sessionId + sessionLockToken from the response)
+POST {{host}}/api/sessions/accept/shipments?wait=5
+
+###
+POST {{host}}/api/sessions/receive/shipments?sessionId=order-42&token=00000000-0000-0000-0000-000000000000&max=10&mode=ReceiveAndDelete
+
+### ---------------- Phase 3: auto-forwarding (create the target first)
+PUT {{host}}/api/queues/all-failures
+
+###
+PUT {{host}}/api/queues/inbox
+Content-Type: application/json
+
+{ "forwardTo": "orders", "forwardDeadLetteredMessagesTo": "all-failures" }
+
+### ---------------- Phase 3: SQL rule action (modifies the subscription's copy)
+PUT {{host}}/api/topics/events/subscriptions/tagged
+Content-Type: application/json
+
+{ "rules": [ { "name": "tag", "sqlFilter": "region = 'eu'", "sqlAction": "SET priority = 'high'; SET sys.Subject = 'eu.' + sys.Subject" } ] }
+
+### ---------------- Phase 3: Prometheus metrics
+GET {{host}}/api/metrics
+
+### WebSocket push endpoint: ws://localhost:5680/api/ws (used automatically by NexusProcessor)

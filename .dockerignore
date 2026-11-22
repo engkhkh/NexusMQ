@@ -1,0 +1,12 @@
+**/bin/
+**/obj/
+**/data/
+**/nexusmq-data/
+.vs/
+.git/
+nupkg/
+tests/
+samples/
+deploy/
+certs/
+scripts/

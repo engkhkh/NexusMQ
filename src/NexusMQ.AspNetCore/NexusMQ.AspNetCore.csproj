@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Description>NexusMQ for ASP.NET Core and Worker apps: host the broker inside your app (AddNexusMQBroker / MapNexusMQ), register the client (AddNexusMQClient) and run message handlers as background services (AddNexusMQHandler).</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\NexusMQ.Core\NexusMQ.Core.csproj" />
+    <ProjectReference Include="..\NexusMQ.Client\NexusMQ.Client.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Dashboard\index.html" LogicalName="NexusMQ.Dashboard.index.html" />
+  </ItemGroup>
+
+</Project>
