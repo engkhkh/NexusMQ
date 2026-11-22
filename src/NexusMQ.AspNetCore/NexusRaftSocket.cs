@@ -61,6 +61,8 @@ internal sealed class WebSocketRaftTransport(NexusClusterOptions options) : IRaf
     private sealed class PeerLink(string baseUrl, NexusClusterOptions options) : IDisposable
     {
         private readonly Uri _uri = new(baseUrl.TrimEnd('/').Replace("https://", "wss://").Replace("http://", "ws://") + "/api/raft/ws");
+        private readonly HttpMessageInvoker _invoker =
+            new(NexusMQ.Client.NexusConnect.CreateHandler(options.AllowUntrustedCertificates), disposeHandler: true);
         private readonly SemaphoreSlim _connectLock = new(1, 1);
         private readonly SemaphoreSlim _sendLock = new(1, 1);
         private readonly ConcurrentDictionary<long, TaskCompletionSource<byte[]?>> _pending = new();
@@ -118,12 +120,11 @@ internal sealed class WebSocketRaftTransport(NexusClusterOptions options) : IRaf
                 fresh.Options.SetRequestHeader("X-Raft-Secret", options.Secret);
                 fresh.Options.KeepAliveInterval = TimeSpan.FromSeconds(15);
                 fresh.Options.CollectHttpResponseDetails = true;
-                if (options.AllowUntrustedCertificates) fresh.Options.RemoteCertificateValidationCallback = (_, _, _, _) => true;
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 timeout.CancelAfter(TimeSpan.FromSeconds(2));
                 try
                 {
-                    await fresh.ConnectAsync(_uri, timeout.Token);
+                    await fresh.ConnectAsync(_uri, _invoker, timeout.Token); // races IPv6/IPv4 (see NexusConnect)
                 }
                 catch (Exception) when (!ct.IsCancellationRequested)
                 {
@@ -186,6 +187,7 @@ internal sealed class WebSocketRaftTransport(NexusClusterOptions options) : IRaf
         {
             _disposed = true;
             if (_ws is { } ws) Fail(ws);
+            _invoker.Dispose();
         }
     }
 

@@ -37,10 +37,10 @@ internal sealed class NexusPushConnection : IAsyncDisposable
             candidate.Options.CollectHttpResponseDetails = true; // to read the leader hint when a follower refuses us
             candidate.Options.KeepAliveInterval = TimeSpan.FromSeconds(20);
             if (!string.IsNullOrEmpty(client.ApiKey)) candidate.Options.SetRequestHeader("X-Api-Key", client.ApiKey);
-            if (client.Options.AllowUntrustedCertificates) candidate.Options.RemoteCertificateValidationCallback = (_, _, _, _) => true;
             try
             {
-                await candidate.ConnectAsync(ub.Uri, ct).ConfigureAwait(false);
+                // Through the client's invoker: certificate settings live there, and it races IPv6/IPv4 addresses.
+                await candidate.ConnectAsync(ub.Uri, client.WebSocketInvoker, ct).ConfigureAwait(false);
                 ws = candidate;
             }
             catch (Exception ex) when (ex is WebSocketException or HttpRequestException && !ct.IsCancellationRequested)

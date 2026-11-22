@@ -60,9 +60,7 @@ internal sealed class HttpRaftTransport : IRaftTransport, IDisposable
     {
         HttpClient Make(TimeSpan timeout)
         {
-            var handler = new SocketsHttpHandler { PooledConnectionLifetime = TimeSpan.FromMinutes(5), ConnectTimeout = TimeSpan.FromSeconds(2) };
-            if (options.AllowUntrustedCertificates)
-                handler.SslOptions.RemoteCertificateValidationCallback = (_, _, _, _) => true;
+            var handler = NexusMQ.Client.NexusConnect.CreateHandler(options.AllowUntrustedCertificates, TimeSpan.FromSeconds(2));
             var c = new HttpClient(handler) { Timeout = timeout };
             c.DefaultRequestHeaders.Add("X-Raft-Secret", options.Secret);
             return c;

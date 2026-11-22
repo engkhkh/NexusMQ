@@ -10,6 +10,10 @@ public sealed class NexusClient : IAsyncDisposable, IDisposable
 {
     private readonly bool _ownsHttp;
     internal HttpClient Http { get; }
+    private HttpMessageInvoker? _sockets;
+    /// <summary>Connects push WebSockets (racing IPv6/IPv4 addresses, see <see cref="NexusConnect"/>).</summary>
+    internal HttpMessageInvoker WebSocketInvoker =>
+        _sockets ??= new HttpMessageInvoker(NexusConnect.CreateHandler(Options.AllowUntrustedCertificates), disposeHandler: true);
     internal string? ApiKey { get; }
     internal NexusClientOptions Options { get; }
 
@@ -34,9 +38,7 @@ public sealed class NexusClient : IAsyncDisposable, IDisposable
 
     private static HttpClient CreateHttp(string baseUrl, NexusClientOptions options)
     {
-        var handler = new HttpClientHandler();
-        if (options.AllowUntrustedCertificates)
-            handler.ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator;
+        var handler = NexusConnect.CreateHandler(options.AllowUntrustedCertificates);
         return new HttpClient(handler) { BaseAddress = ParseEndpoints(baseUrl)[0], Timeout = options.RequestTimeout };
     }
 
@@ -188,6 +190,7 @@ public sealed class NexusClient : IAsyncDisposable, IDisposable
     public void Dispose()
     {
         if (_ownsHttp) Http.Dispose();
+        _sockets?.Dispose();
     }
 
     public ValueTask DisposeAsync()

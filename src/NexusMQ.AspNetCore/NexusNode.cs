@@ -452,8 +452,8 @@ internal sealed class NexusStandbyService(NexusNode node, ILogger<NexusStandbySe
         using var ws = new ClientWebSocket();
         ws.Options.KeepAliveInterval = TimeSpan.FromSeconds(10);
         if (!string.IsNullOrEmpty(opts.PrimaryKey)) ws.Options.SetRequestHeader("X-Api-Key", opts.PrimaryKey);
-        if (opts.AllowUntrustedCertificates) ws.Options.RemoteCertificateValidationCallback = (_, _, _, _) => true;
-        await ws.ConnectAsync(ub.Uri, ct);
+        using var invoker = new HttpMessageInvoker(NexusMQ.Client.NexusConnect.CreateHandler(opts.AllowUntrustedCertificates), disposeHandler: true);
+        await ws.ConnectAsync(ub.Uri, invoker, ct); // races IPv6/IPv4 addresses (see NexusConnect)
         node.ConnectedToPrimary = true;
         node.LastContactUtc = DateTimeOffset.UtcNow;
         log.LogInformation("NexusMQ standby connected to primary {Primary}", opts.PrimaryUrl);

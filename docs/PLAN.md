@@ -242,6 +242,15 @@ direction (the sandbox has no `tc netem`). Only changes that measured better bec
   - 100 B: no clear difference (within run-to-run noise).
 - Tests prove the checksum and the tail trim (each test fails with its protection removed).
 
+## 1.13.1: connections on Windows (found by the first GitHub CI run)
+- On the Windows runner every cluster test failed with "No leader elected", and an HA failover test timed out. `localhost` resolves to `::1` and
+  `127.0.0.1`. The test servers listen on IPv4 only, and Windows takes ~2 s to refuse the IPv6 attempt. .NET tries addresses in order, so the
+  server-to-server WebSocket (2 s connect timeout) never reached the IPv4 address.
+- `NexusConnect` (client library) races all of a host's addresses and keeps the first that connects. It is used for every outgoing connection:
+  Raft HTTP and WebSocket, the standby's replication stream, and the client's HTTP and push connections.
+- Tested with a listener whose accept queue is full (attempts get no answer) placed first in the address list: connected through the
+  second address in milliseconds, and the test fails when the race is removed.
+
 ## CI/CD (Phase 9)
 - `.github/workflows/ci.yml`: build and test on ubuntu-latest and windows-latest (test classes run sequentially via `xunit.runner.json`),
   pack with `-ci.N` versions and install the CLI tool from the packages, and build and smoke-test the Docker image.
