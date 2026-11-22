@@ -7,7 +7,7 @@ COPY Directory.Build.props README.md ./
 COPY src/ src/
 RUN dotnet publish src/NexusMQ.Server/NexusMQ.Server.csproj -c Release -o /app /p:UseAppHost=false
 
-FROM mcr.microsoft.com/dotnet/aspnet:10.0
+FROM mcr.microsoft.com/dotnet/aspnet:11.0
 WORKDIR /app
 COPY --from=build /app .
 RUN mkdir -p /data && chown $APP_UID /data
