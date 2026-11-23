@@ -254,6 +254,11 @@ direction (the sandbox has no `tc netem`). Only changes that measured better bec
 - Dependabot: GitHub Actions bumps (checkout stays v5; setup-dotnet v6, upload-artifact v7, docker actions v4/v6) and test tools
   (Microsoft.NET.Test.Sdk 18.12, coverlet 10.1) applied on main. Ignored from now on: .NET 11 container images (they must move with the
   target framework) and xunit.runner.visualstudio 4.x (that is for xUnit v3).
+- **Duplicate detection now survives restarts and leader changes** (found by an intermittent Windows CI failure: a batch of 10 stored twice
+  after an election). Its history was only in memory, so a server that restored a queue from disk forgot it, and a client's retried send
+  became a second copy. Now the history is rebuilt from the stored messages still inside the window, and `NexusMessage` gets its
+  `MessageId` when created, so a retry carries the same id. Limit: ids of messages already completed before a restart are not remembered.
+- Also fixed a race in a Raft test (checked the snapshot index right after the message count, which the follower updates a moment apart).
 - Tested here: the portable setup started from `start-server.sh`, served the dashboard, and the bundled CLI created a queue, sent and received a
   message, with the data in `setup/server/data`.
 

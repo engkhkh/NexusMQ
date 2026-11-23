@@ -146,6 +146,11 @@ await client.Admin.CreateQueueAsync("inbox", new NexusQueueOptions { ForwardTo =
 await client.Admin.CreateSubscriptionAsync("events", "eu",
     [new NexusSubscriptionRule { SqlFilter = "region = 'eu'", SqlAction = "SET priority = 'high'" }]);
 
+// Exactly one copy even when a send is retried (timeouts, failover): duplicate detection on the queue.
+// Every NexusMessage gets a MessageId when created; set your own (e.g. the order number) to make re-sent business events idempotent.
+await client.Admin.CreateQueueAsync("payments", new NexusQueueOptions { DuplicateDetectionWindow = TimeSpan.FromMinutes(10) });
+await client.CreateSender("payments").SendMessageAsync(new NexusMessage(json) { MessageId = $"payment-{orderId}" });
+
 // Delayed delivery, TTL, dead letters
 await sender.ScheduleMessageAsync(msg, DateTimeOffset.UtcNow.AddMinutes(5));
 msg.TimeToLive = TimeSpan.FromHours(1);

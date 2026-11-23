@@ -186,7 +186,9 @@ public sealed class ClusterTests : IDisposable
     {
         await LeaderId();
         using var client = new NexusClient(AllUrls, "master");
-        await client.Admin.CreateQueueAsync("orders");
+        // Duplicate detection: a send retried across a leader change (at-least-once) must not leave a second copy, so the
+        // exact counts below hold even on a slow machine where an election happens right after start-up.
+        await client.Admin.CreateQueueAsync("orders", new NexusQueueOptions { DuplicateDetectionWindow = TimeSpan.FromMinutes(10) });
         await client.CreateSender("orders").SendMessagesAsync(Enumerable.Range(0, 10).Select(i => new NexusMessage($"m{i}")));
 
         // Add a fourth server (started in join mode), then retire one of the original three.

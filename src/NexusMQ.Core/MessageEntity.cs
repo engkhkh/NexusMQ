@@ -91,6 +91,16 @@ public sealed class MessageEntity
             _nextStateSequence = Math.Max(_nextStateSequence, st.SequenceNumber + 1);
             if (st.SessionId is not null) _sessionState[st.SessionId] = st;
         }
+        // Duplicate detection must survive a restart or a cluster leader change: rebuild its history from the stored
+        // messages still inside the window. Otherwise a client retrying a send after a failover would get a second copy
+        // of a message the old leader had already stored.
+        if (Options.DuplicateDetectionWindow is { } window)
+        {
+            var now = _time.GetUtcNow();
+            foreach (var m in _active.Values.Concat(_scheduled.Values).Concat(_deferred.Values))
+                if (!string.IsNullOrEmpty(m.MessageId) && now - m.EnqueuedTimeUtc < window)
+                    _seenMessageIds[m.MessageId] = m.EnqueuedTimeUtc;
+        }
     }
 
     private string StatePath => Path + "/$sessionstate";

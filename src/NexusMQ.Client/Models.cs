@@ -19,7 +19,12 @@ public sealed class NexusMessage
     public static NexusMessage FromJson<T>(T value, JsonSerializerOptions? options = null) =>
         new(JsonSerializer.SerializeToUtf8Bytes(value, options ?? NexusJson.Options)) { ContentType = "application/json" };
 
-    public string? MessageId { get; set; }
+    /// <summary>
+    /// Identifies the message for duplicate detection. Set when the message is created, so a send that is retried (after a
+    /// timeout or a failover) carries the same id and a queue with duplicate detection keeps only one copy. Set your own
+    /// (e.g. an order number) to make repeated sends of the same business event idempotent.
+    /// </summary>
+    public string? MessageId { get; set; } = Guid.NewGuid().ToString("N");
     public string? CorrelationId { get; set; }
     /// <summary>Label; also the default routing key when publishing to an exchange.</summary>
     public string? Subject { get; set; }
