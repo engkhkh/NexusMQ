@@ -20,4 +20,7 @@
     <EmbeddedResource Include="Dashboard\index.html" LogicalName="NexusMQ.Dashboard.index.html" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="NexusMQ.Tests" />
+  </ItemGroup>
 </Project>

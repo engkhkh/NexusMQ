@@ -47,8 +47,26 @@ public sealed class StandbyConnectionInfo
     public DateTimeOffset LastSentUtc { get; set; }
 }
 
+/// <summary>AppendEntries calls this server received from a leader, by format (counted since start-up).</summary>
+public sealed class RaftAppendsReceived
+{
+    internal static long BinaryCount, SocketJsonCount, HttpCount;
+    /// <summary>Over the server-to-server WebSocket with raw bodies (1.14+ leaders).</summary>
+    public long Binary { get; init; }
+    /// <summary>Over the WebSocket as JSON (leaders on 1.11–1.13).</summary>
+    public long SocketJson { get; init; }
+    /// <summary>As HTTP requests (leaders before 1.11, or <c>Cluster:Transport=Http</c>).</summary>
+    public long Http { get; init; }
+    internal static RaftAppendsReceived Now() => new()
+    {
+        Binary = Interlocked.Read(ref BinaryCount), SocketJson = Interlocked.Read(ref SocketJsonCount), Http = Interlocked.Read(ref HttpCount)
+    };
+}
+
 public sealed class ReplicationStatus
 {
+    /// <summary>Cluster mode: how this server's AppendEntries arrived (shows when a rolling upgrade has reached the binary format).</summary>
+    public RaftAppendsReceived? AppendsReceived { get; init; }
     public NexusRole Role { get; init; }
     public long Position { get; init; }
     // standby side
@@ -285,6 +303,7 @@ public sealed class NexusNode : IDisposable
             PromotedUtc = _promotedUtc,
             Standbys = [.. Standbys.Values],
             Cluster = Raft?.Status(),
+            AppendsReceived = Raft is null ? null : RaftAppendsReceived.Now(),
             LeaderUrl = LeaderUrl
         };
     }

@@ -6,6 +6,7 @@
 #
 #   ./scripts/live-regression.sh            # everything (~6-8 minutes)
 #   ONLY="cluster ha" ./scripts/live-regression.sh
+#   OLD_SERVER=/path/to/older/NexusMQ.Server.dll ./scripts/live-regression.sh   # adds the upgrade checks
 #
 # Needs: .NET 10 SDK, curl, python3, openssl. Optional: node (dashboard JS check), actionlint, docker.
 # Exit code = number of failed checks.
@@ -269,6 +270,34 @@ assert len(alive) >= 1, ms\""
   sleep 5
   check "with a majority back, writes work again" cli --url "$CL,http://localhost:5723" --key master send keep "after recovery"
   check "the refused message never appeared" bash -c "! dotnet '$CLI_DLL' --url '$CL,http://localhost:5723' --key master peek keep | grep -q 'must not exist'"
+fi
+
+# ------------------------------------------------------------------------------------------ upgrade from an older version
+if want upgrade; then
+  say "Upgrade: data written by an older server, read by this one (single server and mixed-version cluster)"
+  if [[ -z "${OLD_SERVER:-}" || ! -f "${OLD_SERVER:-}" ]]; then
+    skip "upgrade checks (set OLD_SERVER to an older NexusMQ.Server.dll)"
+  else
+    head -c 20000 /dev/urandom > "$WORK/big.bin"
+    python3 -c "import base64,json,sys;print(json.dumps([{'subject':'big','bodyBase64':base64.b64encode(open(sys.argv[1],'rb').read()).decode()}]))" "$WORK/big.bin" > "$WORK/big.json"
+    WANT=$(sha256sum "$WORK/big.bin" | cut -c1-16)
+    big_sha() { curl -s "${@:2}" "$1/api/peek/up?max=50" | python3 -c "
+import json,sys,base64,hashlib
+for m in json.load(sys.stdin):
+  if m.get('subject')=='big': print(hashlib.sha256(base64.b64decode(m['bodyBase64'])).hexdigest()[:16])"; }
+    # single server: old writes, new reads (and converts the files)
+    setsid env NexusMQ__DataDirectory="$WORK/up-single" dotnet "$OLD_SERVER" --urls http://localhost:5730 >> "$WORK/up-old.log" 2>&1 < /dev/null &
+    for _ in $(seq 1 60); do curl -sf localhost:5730/api/health >/dev/null && break; sleep 0.5; done
+    code -X PUT localhost:5730/api/queues/up >/dev/null
+    for i in 1 2 3; do code -X POST -H 'Content-Type: application/json' -d "[{\"body\":\"msg $i\"}]" localhost:5730/api/send/up >/dev/null; done
+    code -X POST -H 'Content-Type: application/json' --data-binary @"$WORK/big.json" localhost:5730/api/send/up >/dev/null
+    pkill -9 -f "urls http://localhost:5730"; sleep 1
+    start up-new 5731 NexusMQ__DataDirectory="$WORK/up-single"
+    check "messages written by the older server are all there" bash -c "curl -s localhost:5731/api/stats | grep -q '\"active\":4'"
+    check "binary body survived the upgrade byte for byte" test "$(big_sha http://localhost:5731)" = "$WANT"
+    check "journal converted to the current format" bash -c "head -c 8 '$WORK/up-single/entities/up.journal' | grep -q NMQBIN1"
+    stop up-new
+  fi
 fi
 
 # ------------------------------------------------------------------------------------------ benchmarks

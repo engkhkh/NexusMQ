@@ -119,6 +119,9 @@ calls wait and retry (`FailoverWaitTime`, default 30 s with several URLs). Push 
 
 A single server on the same machine does 11,000–13,000 msg/s over WebSocket.
 
+1.14 (Phase 16) sends message bodies between servers as raw bytes (negotiated, so mixed versions work). `appendsReceived` in
+`nexusmq replication status` / `GET /api/replication/status` shows whether a server gets binary, socket-JSON or HTTP appends.
+
 1.13 (Phase 15) stores journals and the Raft log as binary records: about 24% less disk for 16 KB messages, p99 latency 11–26 → 7–8 ms.
 
 1.11 (Phase 13) adds the server-to-server WebSocket link: +5–15% throughput and about 25% lower latency when servers are ~1 ms apart.

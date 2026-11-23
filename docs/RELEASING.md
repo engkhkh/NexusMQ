@@ -10,6 +10,7 @@ Two GitHub Actions workflows live in `.github/workflows`.
 4. **Live regression:** `scripts/live-regression.sh` starts real servers and checks every feature end to end: failover, leader kill and
    membership changes under traffic must lose no confirmed message. Server logs are uploaded if it fails.
    Run it yourself on Linux/macOS/WSL with `./scripts/live-regression.sh` (or `ONLY="cluster" ./scripts/live-regression.sh` for one area).
+   On pushes, CI also builds the previous commit's server and runs the **upgrade** checks against it (`OLD_SERVER`).
 
 ## `release.yml`: when you push a version tag
 ```powershell

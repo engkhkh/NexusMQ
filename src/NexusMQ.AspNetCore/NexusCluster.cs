@@ -117,7 +117,11 @@ internal static class NexusClusterEndpoints
         endpoints.MapPost(apiRoot + "/raft/vote", (HttpContext h, VoteRequest r) =>
             Authorized(h) is { } raft ? Results.Json(raft.HandleVote(r), NexusReplicationStream.Json) : Results.StatusCode(403));
         endpoints.MapPost(apiRoot + "/raft/append", (HttpContext h, AppendRequest r) =>
-            Authorized(h) is { } raft ? Results.Json(raft.HandleAppend(r), NexusReplicationStream.Json) : Results.StatusCode(403));
+        {
+            if (Authorized(h) is not { } raft) return Results.StatusCode(403);
+            Interlocked.Increment(ref RaftAppendsReceived.HttpCount);
+            return Results.Json(raft.HandleAppend(r), NexusReplicationStream.Json);
+        });
         endpoints.Map(apiRoot + "/raft/ws", WebSocketRaftTransport.ServeAsync);
         endpoints.MapPost(apiRoot + "/raft/snapshot", async (HttpContext h, SnapshotRequest r) =>
             Authorized(h) is { } raft ? Results.Json(await raft.HandleSnapshotAsync(r), NexusReplicationStream.Json) : Results.StatusCode(403));

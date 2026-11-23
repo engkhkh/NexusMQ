@@ -24,7 +24,10 @@ namespace NexusMQ.AspNetCore;
 /// </summary>
 internal sealed class WebSocketRaftTransport(NexusClusterOptions options) : IRaftTransport, IDisposable
 {
-    internal const byte KindVote = 1, KindAppend = 2, ReplyFlag = 0x80;
+    internal const byte KindVote = 1, KindAppend = 2, KindAppendBinary = 3, ReplyFlag = 0x80;
+    /// <summary>Response header on the upgrade: what this server understands beyond JSON votes and appends.</summary>
+    internal const string FeaturesHeader = "X-NexusMQ-Raft-Features";
+    internal const string BinaryAppendFeature = "binary-append";
     private const int HeaderSize = 9;
 
     private readonly HttpRaftTransport _http = new(options);
@@ -33,19 +36,31 @@ internal sealed class WebSocketRaftTransport(NexusClusterOptions options) : IRaf
     public Task<VoteResponse?> RequestVoteAsync(ClusterMember peer, VoteRequest r, CancellationToken ct) =>
         CallAsync<VoteRequest, VoteResponse>(peer, KindVote, r, ct, () => _http.RequestVoteAsync(peer, r, ct));
 
+    /// <summary>Raw message bodies (<see cref="RaftFrames"/>) when the peer said it understands them, JSON otherwise.</summary>
     public Task<AppendResponse?> AppendEntriesAsync(ClusterMember peer, AppendRequest r, CancellationToken ct) =>
-        CallAsync<AppendRequest, AppendResponse>(peer, KindAppend, r, ct, () => _http.AppendEntriesAsync(peer, r, ct));
+        CallAsync<AppendResponse>(peer, binary =>
+                binary && RaftFrames.TryEncodeAppend(r) is { } raw
+                    ? (KindAppendBinary, raw)
+                    : (KindAppend, JsonSerializer.SerializeToUtf8Bytes(r, NexusReplicationStream.Json)),
+            ct, () => _http.AppendEntriesAsync(peer, r, ct));
 
     public Task<SnapshotResponse?> InstallSnapshotAsync(ClusterMember peer, SnapshotRequest r, CancellationToken ct) =>
         _http.InstallSnapshotAsync(peer, r, ct);
 
-    private async Task<TResp?> CallAsync<TReq, TResp>(ClusterMember peer, byte kind, TReq request, CancellationToken ct,
+    private Task<TResp?> CallAsync<TReq, TResp>(ClusterMember peer, byte kind, TReq request, CancellationToken ct,
+        Func<Task<TResp?>> overHttp) where TResp : class =>
+        CallAsync<TResp>(peer, _ => (kind, JsonSerializer.SerializeToUtf8Bytes(request, NexusReplicationStream.Json)), ct, overHttp);
+
+    /// <summary>
+    /// One call to a peer. <c>build</c> makes the call's kind and payload once connected, and is told whether the peer
+    /// accepts binary appends. Falls back to <c>overHttp</c> when the peer has no socket endpoint.
+    /// </summary>
+    private async Task<TResp?> CallAsync<TResp>(ClusterMember peer, Func<bool, (byte Kind, byte[] Payload)> build, CancellationToken ct,
         Func<Task<TResp?>> overHttp) where TResp : class
     {
         var link = _links.GetOrAdd(peer.Url, url => new PeerLink(url, options));
         if (link.UseHttp) return await overHttp();
-        var payload = JsonSerializer.SerializeToUtf8Bytes(request, NexusReplicationStream.Json);
-        var reply = await link.CallAsync(kind, payload, ct);
+        var reply = await link.CallAsync(build, ct);
         if (reply is null) return link.UseHttp ? await overHttp() : null; // just found out the peer has no socket endpoint
         try { return JsonSerializer.Deserialize<TResp>(reply, NexusReplicationStream.Json); }
         catch (JsonException) { return null; }
@@ -74,10 +89,14 @@ internal sealed class WebSocketRaftTransport(NexusClusterOptions options) : IRaf
 
         public bool UseHttp => System.Diagnostics.Stopwatch.GetTimestamp() < Interlocked.Read(ref _httpUntil);
 
-        public async Task<byte[]?> CallAsync(byte kind, byte[] payload, CancellationToken ct)
+        /// <summary>The peer advertised <see cref="BinaryAppendFeature"/> when this connection was opened.</summary>
+        private volatile bool _binaryAppend;
+
+        public async Task<byte[]?> CallAsync(Func<bool, (byte Kind, byte[] Payload)> build, CancellationToken ct)
         {
             var ws = await ConnectAsync(ct);
             if (ws is null) return null;
+            var (kind, payload) = build(_binaryAppend);
 
             var id = Interlocked.Increment(ref _nextId);
             var answer = new TaskCompletionSource<byte[]?>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -136,6 +155,8 @@ internal sealed class WebSocketRaftTransport(NexusClusterOptions options) : IRaf
                     fresh.Dispose();
                     return null;
                 }
+                _binaryAppend = fresh.HttpResponseHeaders?.TryGetValue(FeaturesHeader, out var features) == true
+                                && features.Any(f => f.Contains(BinaryAppendFeature, StringComparison.OrdinalIgnoreCase));
                 _ws = fresh;
                 _ = Task.Run(() => ReceiveLoopAsync(fresh));
                 return fresh;
@@ -191,6 +212,12 @@ internal sealed class WebSocketRaftTransport(NexusClusterOptions options) : IRaf
         }
     }
 
+    private static T Counted<T>(ref long counter, T value)
+    {
+        Interlocked.Increment(ref counter);
+        return value;
+    }
+
     /// <summary>Server side of <c>{api}/raft/ws</c>: one connection from one leader (or candidate), calls handled in order.</summary>
     internal static async Task ServeAsync(HttpContext http)
     {
@@ -209,6 +236,7 @@ internal sealed class WebSocketRaftTransport(NexusClusterOptions options) : IRaf
             return;
         }
 
+        http.Response.Headers[FeaturesHeader] = BinaryAppendFeature; // sent with the 101 upgrade response
         using var ws = await http.WebSockets.AcceptWebSocketAsync();
         var buffer = new ArrayBufferWriter<byte>(64 * 1024);
         var stop = http.RequestAborted;
@@ -234,7 +262,10 @@ internal sealed class WebSocketRaftTransport(NexusClusterOptions options) : IRaf
                     KindVote => JsonSerializer.SerializeToUtf8Bytes(
                         raft.HandleVote(JsonSerializer.Deserialize<VoteRequest>(json.Span, NexusReplicationStream.Json)!), NexusReplicationStream.Json),
                     KindAppend => JsonSerializer.SerializeToUtf8Bytes(
-                        raft.HandleAppend(JsonSerializer.Deserialize<AppendRequest>(json.Span, NexusReplicationStream.Json)!), NexusReplicationStream.Json),
+                        raft.HandleAppend(Counted(ref RaftAppendsReceived.SocketJsonCount,
+                            JsonSerializer.Deserialize<AppendRequest>(json.Span, NexusReplicationStream.Json)!)), NexusReplicationStream.Json),
+                    KindAppendBinary => JsonSerializer.SerializeToUtf8Bytes(
+                        raft.HandleAppend(Counted(ref RaftAppendsReceived.BinaryCount, RaftFrames.DecodeAppend(json.Span))), NexusReplicationStream.Json),
                     _ => []
                 };
                 if (reply.Length == 0) return; // unknown call: close and let the peer fall back
@@ -251,6 +282,7 @@ internal sealed class WebSocketRaftTransport(NexusClusterOptions options) : IRaf
             }
         }
         catch (Exception) when (stop.IsCancellationRequested || ws.State != WebSocketState.Open) { }
+        catch (Exception ex) when (ex is InvalidDataException or JsonException) { } // malformed frame: close, the peer reconnects
         catch (WebSocketException) { }
     }
 }

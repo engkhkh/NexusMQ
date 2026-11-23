@@ -242,6 +242,25 @@ direction (the sandbox has no `tc netem`). Only changes that measured better bec
   - 100 B: no clear difference (within run-to-run noise).
 - Tests prove the checksum and the tail trim (each test fails with its protection removed).
 
+## Binary replication between servers (Phase 16)
+- New server-to-server call `KindAppendBinary`: `[header length][AppendEntries JSON without bodies][body count][body lengths][raw bodies]`
+  (`RaftFrames`). A server announces it with `X-NexusMQ-Raft-Features: binary-append` on the WebSocket upgrade, so leaders send it only to
+  servers that understand it and keep JSON for 1.11–1.13 peers.
+- `GET /api/replication/status` → `appendsReceived` `{binary, socketJson, http}`: how this server's AppendEntries arrived, which shows when a
+  rolling upgrade has reached the binary format.
+- Mixed-version cluster tested live, with two new servers and one 1.13.1:
+  - While the 1.13.1 server led, the new followers received JSON.
+  - After it was killed under traffic, a new leader sent binary to the new follower (986/986 messages, no loss, no duplicates).
+  - The restarted 1.13.1 server was sent JSON and caught up to the identical log.
+- Measured, 3-node cluster, 1.13.1 vs 1.14 (alternating runs):
+  - 64 KB: sending 740–1,000 → 960–1,070 msg/s, p99 7.2–7.4 → 6.4–6.9 ms (with a settle pause before consuming).
+  - 16 KB: sending +3–12%. Consuming unchanged (its run-to-run spread is larger than any difference).
+  - Server-to-server bytes about 25% fewer, which matters more on real networks than on this loopback test.
+- `scripts/live-regression.sh` has an **upgrade** scenario. With `OLD_SERVER=<older NexusMQ.Server.dll>` it writes data with the old server and
+  checks that the new one reads every message, matches a 20 KB random body by SHA-256, and converts the journal. CI builds the previous commit of
+  `main` on every push and runs it.
+- `Sample.Benchmark`: `NEXUSMQ_SETTLE_MS` waits between the send and consume phases.
+
 ## 1.13.1: connections on Windows (found by the first GitHub CI run)
 - On the Windows runner every cluster test failed with "No leader elected", and an HA failover test timed out. `localhost` resolves to `::1` and
   `127.0.0.1`. The test servers listen on IPv4 only, and Windows takes ~2 s to refuse the IPv6 attempt. .NET tries addresses in order, so the
@@ -280,5 +299,6 @@ See `docs/USING-IN-YOUR-PROJECT.md`.
 - **Phase 13 (done)**: server-to-server WebSocket transport, pipelined replication (opt-in), binary message bodies for push.
 - **Phase 14 (done)**: binary send batches with automatic JSON fallback for older servers.
 - **Phase 15 (done)**: binary journals and Raft log with checksums, converting old files in both directions.
-- **Phase 16 (next)**: binary server-to-server calls (AppendEntries still carries base64 JSON), and an upgrade test from an older version in the regression script.
+- **Phase 16 (done)**: binary AppendEntries between servers (negotiated), append-format counters, automatic upgrade test in CI.
+- **Phase 17 (next)**: review and merge the safe Dependabot updates, tag the first GitHub release (packages + container image).
 - **Later**: a published benchmark on proper hardware.

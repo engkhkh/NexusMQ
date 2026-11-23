@@ -65,6 +65,8 @@ async Task<(double Receive, double Send)> MeasureThroughput(NexusClient client, 
         await sender.SendMessagesAsync(Enumerable.Range(i, Math.Min(250, count - i)).Select(x => Make(x.ToString(CultureInfo.InvariantCulture))));
 
     var sendRate = count / sendClock.Elapsed.TotalSeconds;
+    // NEXUSMQ_SETTLE_MS: wait before consuming, so background work from the send phase (replication, journal writes) settles.
+    if (int.TryParse(Environment.GetEnvironmentVariable("NEXUSMQ_SETTLE_MS"), out var settle) && settle > 0) await Task.Delay(settle);
     var received = 0;
     var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
     await using var processor = client.CreateProcessor(queue, new NexusProcessorOptions
