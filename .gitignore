@@ -484,3 +484,6 @@ src/NexusMQ.Server/data/
 samples/Sample.WebApp/nexusmq-data/
 !nupkg/*.nupkg
 certs/
+
+# Built by scripts/make-setup.*
+setup/

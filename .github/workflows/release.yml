@@ -4,6 +4,7 @@ name: Release
 #   - NuGet packages to GitHub Packages (always) and to nuget.org (when the NUGET_API_KEY secret is set)
 #   - a GitHub Release with the packages attached
 #   - a multi-arch Docker image to ghcr.io/<owner>/nexusmq:<version> and :latest
+#   - ready-to-run server setups attached to the release (win-x64, linux-x64 self-contained; portable)
 on:
   push:
     tags: ['v*.*.*']
@@ -29,7 +30,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-dotnet@v5
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.x
       - run: dotnet test tests/NexusMQ.Tests/NexusMQ.Tests.csproj -c Release --blame-hang-timeout 5m
@@ -41,7 +42,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: actions/setup-dotnet@v5
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.x
 
@@ -98,6 +99,49 @@ jobs:
             gh release create "$tag" artifacts/* "${flags[@]}"
           fi
 
+  setup:
+    name: Server setup (${{ matrix.runtime }})
+    needs: nuget   # the GitHub Release exists by then
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      matrix:
+        runtime: [win-x64, linux-x64, portable]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Version from tag
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          v="$INPUT_VERSION"
+          if [ -z "$v" ]; then v="${GITHUB_REF_NAME#v}"; fi
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+
+      - name: Build and archive the setup
+        shell: bash
+        env:
+          RUNTIME: ${{ matrix.runtime }}
+        run: |
+          name="NexusMQ-$VERSION-setup-$RUNTIME"
+          args=()
+          if [ "$RUNTIME" != portable ]; then args=("$RUNTIME"); fi
+          OUTPUT="$RUNNER_TEMP/$name" ./scripts/make-setup.sh "${args[@]}"
+          cd "$RUNNER_TEMP"
+          if [ "$RUNTIME" = linux-x64 ]; then archive="$name.tar.gz"; tar czf "$archive" "$name"; else archive="$name.zip"; zip -qr "$archive" "$name"; fi
+          echo "ARCHIVE=$RUNNER_TEMP/$archive" >> "$GITHUB_ENV"
+
+      - name: Attach to the GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "v$VERSION" "$ARCHIVE" --clobber
+
   docker:
     needs: test
     runs-on: ubuntu-latest
@@ -110,16 +154,16 @@ jobs:
         run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/nexusmq" >> "$GITHUB_ENV"
 
       - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.IMAGE }}
           tags: |

@@ -11,6 +11,8 @@ Two GitHub Actions workflows live in `.github/workflows`.
    membership changes under traffic must lose no confirmed message. Server logs are uploaded if it fails.
    Run it yourself on Linux/macOS/WSL with `./scripts/live-regression.sh` (or `ONLY="cluster" ./scripts/live-regression.sh` for one area).
    On pushes, CI also builds the previous commit's server and runs the **upgrade** checks against it (`OLD_SERVER`).
+5. **Windows setup:** builds the self-contained Windows setup, starts it with `start-server.cmd`, uses the bundled CLI, then installs the
+   start-with-Windows task, checks that it starts the server and keeps data where asked, and removes it again.
 
 ## `release.yml`: when you push a version tag
 ```powershell
@@ -21,7 +23,8 @@ git push origin v1.7.0
 2. Packs with the tag's version (`v1.7.0` → `1.7.0`; a tag like `v1.8.0-beta.1` makes a prerelease).
 3. Pushes the packages to **GitHub Packages** (always, no setup needed) and to **nuget.org** (only if the `NUGET_API_KEY` secret is set).
 4. Creates a **GitHub Release** with generated notes and the packages attached.
-5. Builds a **multi-arch Docker image** (amd64 + arm64) and pushes `ghcr.io/<owner>/nexusmq:1.7.0`, `:1.7` and `:latest`.
+5. Builds the **server setups** (`scripts/make-setup.sh`): self-contained `win-x64` and `linux-x64`, plus `portable`, and attaches them to the release.
+6. Builds a **multi-arch Docker image** (amd64 + arm64) and pushes `ghcr.io/<owner>/nexusmq:1.7.0`, `:1.7` and `:latest`.
 
 You can also run it by hand from the Actions tab (**Run workflow**) and type a version.
 

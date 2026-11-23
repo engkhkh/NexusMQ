@@ -242,6 +242,21 @@ direction (the sandbox has no `tc netem`). Only changes that measured better bec
   - 100 B: no clear difference (within run-to-run noise).
 - Tests prove the checksum and the tail trim (each test fails with its protection removed).
 
+## Setup and first release (Phase 17)
+- `scripts/make-setup.ps1` / `make-setup.sh` build `setup/` in the project folder: `server/` (published broker), `cli/` (nexusmq),
+  `start-server.cmd/.sh`, `nexusmq.cmd/.sh`, `install-startup-task.ps1` / `uninstall-startup-task.ps1` and a README. Portable by default;
+  `-Runtime win-x64` (or linux-x64, …) makes a self-contained single-file build. The start scripts pass `--urls` (default
+  `http://localhost:5680`), because a published server would otherwise listen on .NET's default port 5000.
+- Starting with Windows uses a scheduled task (at boot, as SYSTEM, restarts every minute if it stops, data in `C:\ProgramData\NexusMQ\data`).
+  A Windows service would need `Microsoft.Extensions.Hosting.WindowsServices`, which could not be downloaded and tested here.
+- CI: a `setup-windows` job builds the self-contained setup on a real Windows runner, starts it, uses the CLI, and installs, checks and removes
+  the startup task. The release workflow attaches win-x64, linux-x64 and portable setups to every GitHub Release.
+- Dependabot: GitHub Actions bumps (checkout stays v5; setup-dotnet v6, upload-artifact v7, docker actions v4/v6) and test tools
+  (Microsoft.NET.Test.Sdk 18.12, coverlet 10.1) applied on main. Ignored from now on: .NET 11 container images (they must move with the
+  target framework) and xunit.runner.visualstudio 4.x (that is for xUnit v3).
+- Tested here: the portable setup started from `start-server.sh`, served the dashboard, and the bundled CLI created a queue, sent and received a
+  message, with the data in `setup/server/data`.
+
 ## Binary replication between servers (Phase 16)
 - New server-to-server call `KindAppendBinary`: `[header length][AppendEntries JSON without bodies][body count][body lengths][raw bodies]`
   (`RaftFrames`). A server announces it with `X-NexusMQ-Raft-Features: binary-append` on the WebSocket upgrade, so leaders send it only to
@@ -300,5 +315,6 @@ See `docs/USING-IN-YOUR-PROJECT.md`.
 - **Phase 14 (done)**: binary send batches with automatic JSON fallback for older servers.
 - **Phase 15 (done)**: binary journals and Raft log with checksums, converting old files in both directions.
 - **Phase 16 (done)**: binary AppendEntries between servers (negotiated), append-format counters, automatic upgrade test in CI.
-- **Phase 17 (next)**: review and merge the safe Dependabot updates, tag the first GitHub release (packages + container image).
+- **Phase 17 (done)**: server setup (scripts, start-with-Windows task, tested on a Windows runner), Dependabot updates, first GitHub release.
+- **Phase 18 (next)**: a real Windows service option (once the hosting package can be added and tested), and moving the tests to xUnit v3.
 - **Later**: a published benchmark on proper hardware.

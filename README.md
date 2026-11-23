@@ -51,6 +51,17 @@ the **NexusMQ.AspNetCore** package (embed the broker, DI client, background hand
 
 `src/NexusMQ.Server/NexusMQ.Server.http` has ready-made API calls you can run from inside Visual Studio.
 
+## Server setup (run NexusMQ without Visual Studio)
+
+Build a ready-to-run setup into the `setup` folder of this project:
+```powershell
+.\scripts\make-setup.ps1                    # portable (needs the .NET 10 runtime)
+.\scripts\make-setup.ps1 -Runtime win-x64   # self-contained NexusMQ.Server.exe (no .NET needed)
+```
+Then `setup\start-server.cmd` starts the broker (dashboard at http://localhost:5680), `setup\nexusmq.cmd` is the CLI, and
+`setup\install-startup-task.ps1` (as administrator) makes it start with Windows. See `setup\README.md`.
+Every GitHub release also has these setups as downloads (`NexusMQ-<version>-setup-win-x64.zip`, `-linux-x64.tar.gz`, `-portable.zip`).
+
 ## Command-line tool
 ```powershell
 dotnet tool install -g NexusMQ.Cli --add-source C:\projects-claude\NexusMQ\nupkg

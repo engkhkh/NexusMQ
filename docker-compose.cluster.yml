@@ -16,7 +16,7 @@ x-cluster-env: &cluster
 services:
   nexusmq-1:
     build: .
-    image: nexusmq:1.14.0
+    image: nexusmq:1.15.0
     ports: ["5680:5680"]
     volumes: [nexusmq-1-data:/data]
     environment:
@@ -25,7 +25,7 @@ services:
     restart: unless-stopped
 
   nexusmq-2:
-    image: nexusmq:1.14.0
+    image: nexusmq:1.15.0
     depends_on: [nexusmq-1]
     ports: ["5681:5680"]
     volumes: [nexusmq-2-data:/data]
@@ -35,7 +35,7 @@ services:
     restart: unless-stopped
 
   nexusmq-3:
-    image: nexusmq:1.14.0
+    image: nexusmq:1.15.0
     depends_on: [nexusmq-1]
     ports: ["5682:5680"]
     volumes: [nexusmq-3-data:/data]

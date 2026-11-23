@@ -4,9 +4,20 @@ updates:
     directory: /
     schedule: { interval: weekly }
     open-pull-requests-limit: 5
+    ignore:
+      # xunit.runner.visualstudio 4.x is for xUnit v3; the tests use xUnit v2 (moving to v3 is a separate change).
+      - dependency-name: xunit.runner.visualstudio
+        versions: [">= 4.0.0"]
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: monthly }
   - package-ecosystem: docker
     directory: /
     schedule: { interval: monthly }
+    ignore:
+      # The images must match the projects' target framework (net10.0). Moving to .NET 11 changes
+      # TargetFramework, global.json and these images together, so it is done by hand.
+      - dependency-name: dotnet/sdk
+        update-types: [version-update:semver-major, version-update:semver-minor]
+      - dependency-name: dotnet/aspnet
+        update-types: [version-update:semver-major, version-update:semver-minor]
