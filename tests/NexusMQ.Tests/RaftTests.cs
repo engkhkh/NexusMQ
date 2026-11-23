@@ -158,8 +158,9 @@ public sealed class RaftTests : IDisposable
         await Eventually(() => leader.Status().SnapshotIndex > 0); // the leader compacted its log
 
         _net.Down.TryRemove(lagger.Id, out _);
-        await Eventually(() => Count(lagger.Id, "big") == 100, ms: 10000);
-        Assert.True(lagger.Status().SnapshotIndex > 0);
+        // Wait for both together: the store is filled from the snapshot just before the log records it (both under the
+        // apply lock), so checking the snapshot index right after seeing 100 messages could catch the moment in between.
+        await Eventually(() => Count(lagger.Id, "big") == 100 && lagger.Status().SnapshotIndex > 0, ms: 10000);
     }
 
     [Fact]
