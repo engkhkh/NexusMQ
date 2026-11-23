@@ -10,7 +10,7 @@ x-common-env: &common
 services:
   nexusmq-a:
     build: .
-    image: nexusmq:1.15.0
+    image: nexusmq:1.16.0
     ports: ["5680:5680"]
     volumes: [nexusmq-a-data:/data]
     environment:
@@ -19,7 +19,7 @@ services:
     restart: unless-stopped
 
   nexusmq-b:
-    image: nexusmq:1.15.0
+    image: nexusmq:1.16.0
     depends_on: [nexusmq-a]
     ports: ["5682:5680"]
     volumes: [nexusmq-b-data:/data]

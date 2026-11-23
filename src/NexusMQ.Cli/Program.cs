@@ -23,6 +23,9 @@ try
 {
     switch (cmd)
     {
+        case "demo":
+            return await Demo.RunAsync(client, TimeSpan.FromMinutes(double.Parse(a.Opt("minutes") ?? "5")), cts.Token);
+
         case "stats":
         {
             var stats = await admin.GetStatsAsync(cts.Token);

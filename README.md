@@ -53,6 +53,9 @@ the **NexusMQ.AspNetCore** package (embed the broker, DI client, background hand
 
 ## Server setup (run NexusMQ without Visual Studio)
 
+**دليل الاستخدام بالعربية خطوة بخطوة مع صور:** [docs/GUIDE-AR.md](docs/GUIDE-AR.md) (Arabic step-by-step guide with screenshots).
+To see it working right away: start the server, open http://localhost:5680, and run `nexusmq demo`.
+
 Build a ready-to-run setup into the `setup` folder of this project:
 ```powershell
 .\scripts\make-setup.ps1                    # portable (needs the .NET 10 runtime)

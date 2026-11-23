@@ -91,6 +91,9 @@ internal static class Help
           --url http://localhost:5680   --key <access key>   --json (machine-readable output)
           --insecure   accept self-signed HTTPS certificates (development only)
 
+        Try it:
+          nexusmq demo [--minutes 5]          sample workload (orders, events, dead letters, errors) for the dashboard
+
         Messages:
           nexusmq send <entity> <body | @file> [--subject s] [--session id] [--prop k=v]... [--count n]
                        [--delay seconds] [--ttl seconds] [--message-id id] [--routing-key key]

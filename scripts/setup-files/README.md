@@ -10,10 +10,13 @@ Everything needed to run a NexusMQ broker on this machine.
 | `uninstall-startup-task.ps1` | Windows: stop it and remove the startup task (data is kept) |
 | `server\appsettings.json` | Settings: access keys, data folder, cluster, storage format |
 
+**دليل عربي خطوة بخطوة مع صور:** `docs/GUIDE-AR.md` في مجلد المشروع، أو على GitHub.
+
 ## Quick start
 1. Double-click `start-server.cmd` (Linux/macOS: `./start-server.sh`).
 2. Open http://localhost:5680 for the dashboard.
-3. Try it: `nexusmq --url http://localhost:5680 create queue orders`, then `send orders "hello"`, then `receive orders`.
+3. See it working: run `nexusmq demo` in a second window and watch the dashboard (orders, events, dead letters, errors).
+4. Try it yourself: `nexusmq create queue orders`, then `nexusmq send orders "hello"`, then `nexusmq receive orders`.
 
 **Other machines.** By default only this machine can connect. To accept connections from the network, start it with
 `set NEXUSMQ_URLS=http://0.0.0.0:5680` (or `-Urls http://0.0.0.0:5680` for the startup task). **Set an access key first**

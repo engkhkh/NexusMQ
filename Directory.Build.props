@@ -1,7 +1,7 @@
 <Project>
   <!-- Shared settings for every project in the solution. -->
   <PropertyGroup>
-    <Version>1.15.0</Version>
+    <Version>1.16.0</Version>
     <!-- Package IDs are $(NexusMQPackagePrefix).Core / .Client / .AspNetCore / .Cli.
          If "NexusMQ" is taken on nuget.org, change this (e.g. "Engkhkh.NexusMQ") or pass -p:NexusMQPackagePrefix=… -->
     <NexusMQPackagePrefix Condition="'$(NexusMQPackagePrefix)' == ''">NexusMQ</NexusMQPackagePrefix>

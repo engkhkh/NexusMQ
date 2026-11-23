@@ -242,6 +242,15 @@ direction (the sandbox has no `tc netem`). Only changes that measured better bec
   - 100 B: no clear difference (within run-to-run noise).
 - Tests prove the checksum and the tail trim (each test fails with its protection removed).
 
+## Demo and Arabic guide (1.16)
+- `nexusmq demo [--minutes 5]` creates demo-orders (queue, poison orders dead-lettered after 3 tries), demo-events (topic; "billing" with
+  SQL filter amount > 500, "shipping" processed slowly so a backlog builds up), demo-logs (topic exchange, `*.error` → demo-errors) and a
+  scheduled message, then sends and processes orders with Arabic and English customer names, printing progress every 3 s.
+- `docs/GUIDE-AR.md`: Arabic step-by-step guide (start, dashboard columns, peek, dead letters, routed errors, trying it yourself, CLI,
+  C# client, clean-up, troubleshooting), with screenshots in `docs/guide/` taken from a live run. Every command in it was run as written.
+- First GitHub release: v1.15.0 (packages, symbols, win-x64/linux-x64/portable setups, container image), started from the API with the
+  manual release trigger, because this session's git proxy does not push tags.
+
 ## Setup and first release (Phase 17)
 - `scripts/make-setup.ps1` / `make-setup.sh` build `setup/` in the project folder: `server/` (published broker), `cli/` (nexusmq),
   `start-server.cmd/.sh`, `nexusmq.cmd/.sh`, `install-startup-task.ps1` / `uninstall-startup-task.ps1` and a README. Portable by default;
