@@ -141,6 +141,39 @@ jobs:
           try { Invoke-RestMethod http://localhost:5690/api/health -TimeoutSec 3 | Out-Null } catch { $still = $false }
           if ($still) { throw "the server still runs after uninstalling" }
 
+      - name: Install, restart, crash, stop and remove the Windows service
+        shell: pwsh
+        run: |
+          $s = "$env:RUNNER_TEMP\setup"
+          $data = "$env:RUNNER_TEMP\nexusmq-service-data"
+          function Wait-Up([int]$seconds = 60) {
+            foreach ($i in 1..$seconds) { try { Invoke-RestMethod http://localhost:5691/api/health | Out-Null; return $true } catch { Start-Sleep 1 } }
+            return $false
+          }
+          & "$s\install-service.ps1" -Urls http://localhost:5691 -DataDirectory $data
+          if (-not (Wait-Up)) { Get-Service NexusMQ | Format-List *; throw "the service did not start" }
+          if ((Get-Service NexusMQ).Status -ne 'Running') { throw "Windows reports the service as $((Get-Service NexusMQ).Status)" }
+          & "$s\nexusmq.cmd" --url http://localhost:5691 create queue svc; if ($LASTEXITCODE) { throw "create failed" }
+          & "$s\nexusmq.cmd" --url http://localhost:5691 send svc "survives a restart"; if ($LASTEXITCODE) { throw "send failed" }
+
+          Restart-Service NexusMQ          # clean stop (our STOP handling) and start
+          if (-not (Wait-Up)) { throw "the service did not come back after Restart-Service" }
+          $out = & "$s\nexusmq.cmd" --url http://localhost:5691 peek svc | Out-String
+          if ($out -notmatch "survives a restart") { throw "message lost across the restart: $out" }
+
+          Get-Process NexusMQ.Server | Stop-Process -Force   # a crash: Windows' recovery settings restart it after 5 s
+          Start-Sleep 2
+          if (-not (Wait-Up 45)) { throw "Windows did not restart the service after it crashed" }
+
+          Stop-Service NexusMQ
+          if ((Get-Service NexusMQ).Status -ne 'Stopped') { throw "the service did not stop" }
+          $still = $true
+          try { Invoke-RestMethod http://localhost:5691/api/health -TimeoutSec 3 | Out-Null } catch { $still = $false }
+          if ($still) { throw "still serving after Stop-Service" }
+          if (-not (Test-Path "$data\entities\svc.journal")) { throw "data is not in $data" }
+          & "$s\uninstall-service.ps1"
+          if (Get-Service -Name NexusMQ -ErrorAction SilentlyContinue) { throw "the service is still registered" }
+
   pack:
     name: Pack
     needs: build-test

@@ -6,8 +6,10 @@ Everything needed to run a NexusMQ broker on this machine.
 |---|---|
 | `start-server.cmd` / `start-server.sh` | Start the broker in a window. Dashboard: http://localhost:5680 |
 | `nexusmq.cmd` / `nexusmq.sh` | The command-line tool: `nexusmq --url http://localhost:5680 stats` |
-| `install-startup-task.ps1` | Windows: start NexusMQ with Windows (run PowerShell **as administrator**) |
-| `uninstall-startup-task.ps1` | Windows: stop it and remove the startup task (data is kept) |
+| `install-service.ps1` | Windows: install NexusMQ as a **Windows service** (run PowerShell **as administrator**) — recommended |
+| `uninstall-service.ps1` | Windows: stop and remove the service (data is kept) |
+| `install-startup-task.ps1` | Windows: alternative to the service, a task that starts NexusMQ at boot |
+| `uninstall-startup-task.ps1` | Windows: remove that task (data is kept) |
 | `server\appsettings.json` | Settings: access keys, data folder, cluster, storage format |
 
 **دليل عربي خطوة بخطوة مع صور:** `docs/GUIDE-AR.md` في مجلد المشروع، أو على GitHub.
@@ -22,8 +24,10 @@ Everything needed to run a NexusMQ broker on this machine.
 `set NEXUSMQ_URLS=http://0.0.0.0:5680` (or `-Urls http://0.0.0.0:5680` for the startup task). **Set an access key first**
 (`NexusMQ:ApiKey` in `server\appsettings.json`), and allow port 5680 in the firewall.
 
-**Starting with Windows.** `install-startup-task.ps1` registers a task that runs at boot as SYSTEM, restarts the broker if it
-stops, and keeps data in `C:\ProgramData\NexusMQ\data` (change with `-DataDirectory`).
+**Starting with Windows.** `install-service.ps1` installs the Windows service "NexusMQ": it starts automatically, appears in
+`services.msc` (Start/Stop/Restart there or with `Stop-Service NexusMQ`), is restarted by Windows if it fails, and keeps data in
+`C:\ProgramData\NexusMQ\data` (change with `-DataDirectory`). `install-startup-task.ps1` is a simpler alternative (a scheduled
+task at boot); use one or the other, not both.
 
 **Which .NET.** The `*-win-x64` and `*-linux-x64` downloads from the GitHub release include .NET (no install needed). The
 "portable" setup needs the .NET 10 runtime (`dotnet --list-runtimes` shows `Microsoft.AspNetCore.App 10.x`).

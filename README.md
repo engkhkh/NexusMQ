@@ -62,7 +62,8 @@ Build a ready-to-run setup into the `setup` folder of this project:
 .\scripts\make-setup.ps1 -Runtime win-x64   # self-contained NexusMQ.Server.exe (no .NET needed)
 ```
 Then `setup\start-server.cmd` starts the broker (dashboard at http://localhost:5680), `setup\nexusmq.cmd` is the CLI, and
-`setup\install-startup-task.ps1` (as administrator) makes it start with Windows. See `setup\README.md`.
+`setup\install-service.ps1` (as administrator) installs it as a **Windows service** (automatic start, in services.msc, restarted if it
+fails). See `setup\README.md`.
 Every GitHub release also has these setups as downloads (`NexusMQ-<version>-setup-win-x64.zip`, `-linux-x64.tar.gz`, `-portable.zip`).
 
 ## Command-line tool

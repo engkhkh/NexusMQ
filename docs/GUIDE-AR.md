@@ -194,7 +194,7 @@ nexusmq delete exchange demo-logs
 | المتصفح لا يفتح الصفحة | تأكد أن نافذة الخادم مفتوحة وفيها `Now listening on`. |
 | `cannot reach NexusMQ at http://localhost:5680` | الخادم غير مشغّل، أو يعمل على منفذ آخر. |
 | `dotnet` غير معروف | الإعداد "portable" يحتاج .NET 10. استخدم النسخة `win-x64` من صفحة الإصدارات على GitHub (لا تحتاج .NET). |
-| تريد أن يعمل الخادم مع تشغيل Windows | شغّل PowerShell **كمسؤول** (Administrator) ثم `setup\install-startup-task.ps1`. |
+| تريد أن يعمل الخادم مع تشغيل Windows | شغّل PowerShell **كمسؤول** (Administrator) ثم `setup\install-service.ps1` — يُثبَّت كخدمة Windows تعمل تلقائياً وتظهر في `services.msc`، ويعيد Windows تشغيلها إذا توقفت. لإزالتها: `setup\uninstall-service.ps1`. |
 | الوصول من جهاز آخر | اضبط مفتاح وصول `NexusMQ:ApiKey` في `setup\server\appsettings.json` أولاً، ثم شغّل بـ `set NEXUSMQ_URLS=http://0.0.0.0:5680`. |
 
 </div>

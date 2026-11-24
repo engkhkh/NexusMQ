@@ -242,6 +242,19 @@ direction (the sandbox has no `tc netem`). Only changes that measured better bec
   - 100 B: no clear difference (within run-to-run noise).
 - Tests prove the checksum and the tail trim (each test fails with its protection removed).
 
+## Windows service and xUnit v3 (Phase 18, 1.17)
+- `NexusMQ.Server --windows-service` runs under Windows' Service Control Manager. It calls advapi32 directly
+  (`StartServiceCtrlDispatcher`, `RegisterServiceCtrlHandlerEx`, `SetServiceStatus`) on a background thread, as ServiceBase does, so no
+  extra package is needed (NuGet cannot be reached from the build sandbox). It reports RUNNING once Kestrel listens, and STOP_PENDING →
+  host shutdown → STOPPED on Stop or machine shutdown. Content root is the program folder (services start in System32). Started by hand
+  with the flag, it falls back to a console app with a warning.
+- `setup/install-service.ps1` / `uninstall-service.ps1`: automatic start, shown in services.msc, recovery restarts after 5 s / 5 s / 1 min.
+  The startup-task scripts remain as an alternative.
+- CI (Windows runner) installs the service, checks it serves, `Restart-Service` (message kept), kills the process (Windows restarts it),
+  `Stop-Service` (nothing serving afterwards, data in the chosen folder), then uninstalls it.
+- Tests moved to xUnit v3 (`xunit.v3`, test project is an executable). No test code changes were needed (only facts, theories and
+  assertions are used). Dependabot no longer holds back xunit.runner.visualstudio 4.x.
+
 ## Demo and Arabic guide (1.16)
 - `nexusmq demo [--minutes 5]` creates demo-orders (queue, poison orders dead-lettered after 3 tries), demo-events (topic; "billing" with
   SQL filter amount > 500, "shipping" processed slowly so a backlog builds up), demo-logs (topic exchange, `*.error` → demo-errors) and a
@@ -330,5 +343,7 @@ See `docs/USING-IN-YOUR-PROJECT.md`.
 - **Phase 15 (done)**: binary journals and Raft log with checksums, converting old files in both directions.
 - **Phase 16 (done)**: binary AppendEntries between servers (negotiated), append-format counters, automatic upgrade test in CI.
 - **Phase 17 (done)**: server setup (scripts, start-with-Windows task, tested on a Windows runner), Dependabot updates, first GitHub release.
-- **Phase 18 (next)**: a real Windows service option (once the hosting package can be added and tested), and moving the tests to xUnit v3.
+- **Phase 18 (done)**: Windows service (no extra package), tested install/restart/crash/stop on a Windows runner; tests on xUnit v3.
+- **Phase 19 (next)**: PreVote for Raft (a server rejoining after a network cut should not force an election), found while
+  investigating a flaky test.
 - **Later**: a published benchmark on proper hardware.
