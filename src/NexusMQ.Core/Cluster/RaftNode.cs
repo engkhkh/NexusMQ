@@ -24,6 +24,13 @@ public sealed record SnapshotResponse(long Term);
 public interface IRaftTransport
 {
     Task<VoteResponse?> RequestVoteAsync(ClusterMember peer, VoteRequest request, CancellationToken ct);
+    /// <summary>
+    /// PreVote: "would you vote for me at <c>request.Term</c>?", asked before an election without changing any term or vote.
+    /// The default (a transport, or a peer, without PreVote) answers yes without asking, which is how elections worked
+    /// before: the real vote that follows still decides.
+    /// </summary>
+    Task<VoteResponse?> RequestPreVoteAsync(ClusterMember peer, VoteRequest request, CancellationToken ct) =>
+        Task.FromResult<VoteResponse?>(new VoteResponse(request.Term - 1, true));
     Task<AppendResponse?> AppendEntriesAsync(ClusterMember peer, AppendRequest request, CancellationToken ct);
     Task<SnapshotResponse?> InstallSnapshotAsync(ClusterMember peer, SnapshotRequest request, CancellationToken ct);
 }
@@ -71,6 +78,10 @@ public sealed class RaftStatus
     public long AppendCallsSent { get; init; }
     /// <summary>Log entries carried by those calls; entries per call shows how well replication batches.</summary>
     public long AppendEntriesSent { get; init; }
+    /// <summary>PreVote rounds this node ran (its election timer expired).</summary>
+    public long PreVoteRounds { get; init; }
+    /// <summary>Real elections this node started (a PreVote majority said yes): each one raises the term.</summary>
+    public long ElectionsStarted { get; init; }
 }
 
 /// <summary>
@@ -107,6 +118,7 @@ public sealed class RaftNode : IDisposable
     private DateTime _lastHeard = DateTime.UtcNow;
     private TimeSpan _electionDeadline;
     private long _appendCalls, _appendEntriesSent;
+    private long _preVotes, _elections;
     private TaskCompletionSource _commitSignal = NewSignal();
     private TaskCompletionSource _appendSignal = NewSignal();
     private readonly SemaphoreSlim _applyWake = new(0);
@@ -235,8 +247,69 @@ public sealed class RaftNode : IDisposable
         }
     }
 
+    /// <summary>
+    /// PreVote round (Raft thesis §9.6): before raising its term, a server asks whether a majority would vote for it. A
+    /// server cut off from the others gets no majority, so its term stays where it was and, when the network comes back,
+    /// it simply follows the leader again instead of forcing an election with its higher term.
+    /// </summary>
+    private async Task<bool> PreVoteAsync()
+    {
+        VoteRequest request;
+        long term;
+        List<ClusterMember> peers;
+        int majority;
+        lock (_gate)
+        {
+            term = _log.CurrentTerm;
+            _leaderId = null; // we lost the leader; don't send clients to it
+            ResetElectionTimer();
+            request = new VoteRequest(term + 1, _id, _log.LastIndex, _log.LastTerm);
+            peers = [.. PeersUnsafe];
+            majority = Majority;
+        }
+        Interlocked.Increment(ref _preVotes);
+
+        var votes = 1;
+        if (votes < majority)
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_stop.Token);
+            timeout.CancelAfter(_options.ElectionTimeout);
+            var pending = peers.Select(p => _transport.RequestPreVoteAsync(p, request, timeout.Token)).ToList();
+            while (pending.Count > 0 && votes < majority)
+            {
+                var done = await Task.WhenAny(pending);
+                pending.Remove(done);
+                VoteResponse? r;
+                try { r = await done; } catch { r = null; }
+                if (r is null) continue;
+                if (r.Granted) { votes++; continue; }
+                lock (_gate)
+                    if (r.Term > _log.CurrentTerm) { StepDownUnsafe(r.Term); return false; } // we were behind: catch up
+            }
+            if (votes < majority) return false;
+        }
+        lock (_gate)
+            // Still worth an election? Not if a leader reached us or our term moved while we were asking.
+            // (A candidate whose election was split asks again: it is no leader and has none.)
+            return _role != RaftRole.Leader && _leaderId is null && _log.CurrentTerm == term && IsVoterUnsafe;
+    }
+
+    /// <summary>Answer a PreVote: the same checks as a real vote, but nothing is changed or recorded.</summary>
+    public VoteResponse HandlePreVote(VoteRequest req)
+    {
+        lock (_gate)
+        {
+            var inTouchWithLeader = _role == RaftRole.Leader
+                                    || (_leaderId is not null && DateTime.UtcNow - _lastHeard < _options.ElectionTimeout);
+            var upToDate = req.LastLogTerm > _log.LastTerm || (req.LastLogTerm == _log.LastTerm && req.LastLogIndex >= _log.LastIndex);
+            return new VoteResponse(_log.CurrentTerm, !inTouchWithLeader && req.Term > _log.CurrentTerm && upToDate);
+        }
+    }
+
     private async Task RunElectionAsync()
     {
+        if (!await PreVoteAsync()) return;
+        Interlocked.Increment(ref _elections);
         VoteRequest request;
         long term;
         List<ClusterMember> peers;
@@ -892,7 +965,9 @@ public sealed class RaftNode : IDisposable
                     ? _lastAck.ToDictionary(kv => kv.Key, kv => kv.Value == DateTime.MinValue ? (long?)null : (long)(DateTime.UtcNow - kv.Value).TotalMilliseconds)
                     : new(),
                 AppendCallsSent = Interlocked.Read(ref _appendCalls),
-                AppendEntriesSent = Interlocked.Read(ref _appendEntriesSent)
+                AppendEntriesSent = Interlocked.Read(ref _appendEntriesSent),
+                PreVoteRounds = Interlocked.Read(ref _preVotes),
+                ElectionsStarted = Interlocked.Read(ref _elections)
             };
         }
     }

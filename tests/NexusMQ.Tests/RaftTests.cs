@@ -27,6 +27,16 @@ internal sealed class FakeNetwork : IRaftTransport
         return Reachable(peer.Id) ? Root.Nodes[peer.Id].HandleVote(r) : null;
     }
 
+    /// <summary>Peers that answer PreVote like a version without it (yes, without being asked).</summary>
+    public readonly ConcurrentDictionary<string, bool> NoPreVote = new();
+
+    public async Task<VoteResponse?> RequestPreVoteAsync(ClusterMember peer, VoteRequest r, CancellationToken ct)
+    {
+        await Task.Yield();
+        if (!Reachable(peer.Id)) return null;
+        return Root.NoPreVote.ContainsKey(peer.Id) ? new VoteResponse(r.Term - 1, true) : Root.Nodes[peer.Id].HandlePreVote(r);
+    }
+
     public async Task<AppendResponse?> AppendEntriesAsync(ClusterMember peer, AppendRequest r, CancellationToken ct)
     {
         await Task.Yield();
@@ -180,6 +190,85 @@ public sealed class RaftTests : IDisposable
         Assert.True(log.CurrentTerm >= term);
         Assert.True(log.LastIndex >= index);
         Assert.Equal(term, log.TermAt(index));
+    }
+
+    [Fact]
+    public async Task A_follower_cut_off_and_reconnected_does_not_disturb_the_leader()
+    {
+        StartAll();
+        var leader = await Leader();
+        var term = leader.CurrentTerm;
+        var follower = _net.Nodes.Values.First(n => n.Id != leader.Id);
+        var other = _net.Nodes.Values.First(n => n.Id != leader.Id && n.Id != follower.Id);
+
+        await Eventually(() => follower.Status().LeaderId == leader.Id && follower.CurrentTerm == term);
+        var (rounds, elections) = (follower.Status().PreVoteRounds, follower.Status().ElectionsStarted); // (it may have run in the first election)
+
+        _net.Down[follower.Id] = true;
+        await Eventually(() => follower.Status().PreVoteRounds >= rounds + 3, ms: 5000); // its timer keeps expiring...
+        Assert.Equal(term, follower.CurrentTerm);                                        // ...but it never raises its term
+        Assert.Equal(elections, follower.Status().ElectionsStarted);
+        Assert.Null(follower.Status().LeaderId);                                // and no longer points clients at the leader
+
+        _net.Down.TryRemove(follower.Id, out _);
+        await Eventually(() => follower.Status().LeaderId == leader.Id);
+        var (index, t) = leader.Propose(Put("q", 1, "after"));
+        Assert.True(await leader.WaitCommittedAsync(index, t, TimeSpan.FromSeconds(5)));
+        await Eventually(() => Count(follower.Id, "q") == 1);
+        Assert.True(leader.IsReadyLeader);                 // same leader,
+        Assert.Equal(term, leader.CurrentTerm);            // same term: no election happened
+        Assert.Equal(term, other.CurrentTerm);
+    }
+
+    [Fact]
+    public async Task PreVote_is_refused_while_the_leader_is_alive_and_changes_nothing()
+    {
+        StartAll();
+        var leader = await Leader();
+        var follower = _net.Nodes.Values.First(n => n.Id != leader.Id);
+        var before = follower.Status();
+        var probe = new VoteRequest(before.Term + 5, "x", long.MaxValue, long.MaxValue);
+        Assert.False(follower.HandlePreVote(probe).Granted); // hears from the leader: no
+        Assert.False(leader.HandlePreVote(probe).Granted);   // is the leader: no
+        Assert.Equal(before.Term, follower.CurrentTerm);    // and nothing was recorded
+        Assert.Equal(leader.Id, follower.Status().LeaderId);
+
+        // Once the leader is gone, the remaining two agree and elect one of themselves.
+        _net.Down[leader.Id] = true;
+        var fresh = await Leader(excluding: leader.Id);
+        Assert.NotEqual(leader.Id, fresh.Id);
+        Assert.True(fresh.CurrentTerm > before.Term);
+    }
+
+    [Fact]
+    public async Task PreVote_refuses_a_server_whose_log_is_behind()
+    {
+        StartAll();
+        var leader = await Leader();
+        var (index, t) = leader.Propose(Put("q", 1, "x"));
+        Assert.True(await leader.WaitCommittedAsync(index, t, TimeSpan.FromSeconds(5)));
+        var follower = _net.Nodes.Values.First(n => n.Id != leader.Id);
+        await Eventually(() => Count(follower.Id, "q") == 1);
+        foreach (var n in _net.Nodes.Keys.Where(id => id != follower.Id)) _net.Down[n] = true; // alone: no leader, no election
+        await Eventually(() => follower.Status().LeaderId is null && follower.Status().PreVoteRounds > 0);
+        var term = follower.CurrentTerm;
+        Assert.False(follower.HandlePreVote(new VoteRequest(term + 1, "x", 0, 0)).Granted);                  // log behind: no
+        var mine = follower.Status();
+        Assert.True(follower.HandlePreVote(new VoteRequest(term + 1, "x", mine.LastLogIndex, leader.CurrentTerm)).Granted); // same log: yes
+        Assert.Equal(term, follower.CurrentTerm);
+    }
+
+    [Fact]
+    public async Task Mixed_cluster_with_peers_without_PreVote_still_elects()
+    {
+        foreach (var m in _members.Skip(1)) _net.NoPreVote[m.Id] = true; // a rolling upgrade: only "a" has PreVote
+        StartAll();
+        var leader = await Leader();
+        var (index, t) = leader.Propose(Put("q", 1, "x"));
+        Assert.True(await leader.WaitCommittedAsync(index, t, TimeSpan.FromSeconds(5)));
+        _net.Down[leader.Id] = true;
+        var fresh = await Leader(excluding: leader.Id);
+        Assert.NotEqual(leader.Id, fresh.Id);
     }
 
     public void Dispose()

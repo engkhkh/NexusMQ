@@ -103,6 +103,10 @@ calls wait and retry (`FailoverWaitTime`, default 30 s with several URLs). Push 
   happen twice. Messages being processed when the leader died are redelivered. Use `MessageId` with duplicate detection where repeats matter.
 - **Consumers only see confirmed messages** (with the default `DeliverOnlyCommitted`). The dashboard's peek view and stats read the leader's
   memory and can show a send a few milliseconds before it is confirmed.
+- **A server that was cut off rejoins quietly.** While it cannot reach a majority it only asks whether it *could* win an election
+  (Raft PreVote) and never raises its term, so when the network comes back it follows the current leader and nobody notices. Servers
+  agree on this when they connect; an older server in the cluster during an upgrade is treated as "yes", which is how it worked before.
+  Each server's `preVoteRounds` and `electionsStarted` are in `GET /api/replication/status` (under `cluster`).
 - **Membership changes go one server at a time** and need a working majority, both before and after the change.
 - Message locks and push subscriptions live on the leader only. After a leader change, unsettled messages become available again.
 
@@ -151,5 +155,7 @@ concurrent senders and consumers (`MaxConcurrentCalls`, `PrefetchCount`).
 - **Two of three killed:** the survivor refused writes, and the refused message never appeared later. With a majority back, writes resumed with all data intact.
 - **Membership changes under steady traffic:** added a 4th server, had the leader remove itself, then hard-killed that old leader. All 1,044 confirmed
   messages were delivered, with none missing, no duplicates and zero client errors, and the remaining servers' logs were identical.
+- **Network cut (PreVote), three real servers:** one follower was cut off from the other two for 10 s and then reconnected (TCP proxy
+  stopped and restarted). See the before/after numbers in `docs/PLAN.md` (Phase 19).
 - **In-process tests:** fake-network partitions show a cut-off leader cannot confirm writes and steps down, its unconfirmed write is discarded
   after healing, and a node that fell behind catches up through a snapshot.

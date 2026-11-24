@@ -86,6 +86,23 @@ internal sealed class HttpRaftTransport : IRaftTransport, IDisposable
     public Task<VoteResponse?> RequestVoteAsync(ClusterMember peer, VoteRequest r, CancellationToken ct) =>
         Post<VoteRequest, VoteResponse>(_http, peer, "vote", r, ct);
 
+    /// <summary>A peer without the endpoint (404/405: an older version) answers yes, as elections worked before PreVote.</summary>
+    public async Task<VoteResponse?> RequestPreVoteAsync(ClusterMember peer, VoteRequest r, CancellationToken ct)
+    {
+        try
+        {
+            using var resp = await _http.PostAsJsonAsync(peer.Url.TrimEnd('/') + "/api/raft/prevote", r, NexusReplicationStream.Json, ct);
+            if (resp.StatusCode is System.Net.HttpStatusCode.NotFound or System.Net.HttpStatusCode.MethodNotAllowed)
+                return new VoteResponse(r.Term - 1, true);
+            if (!resp.IsSuccessStatusCode) return null;
+            return await resp.Content.ReadFromJsonAsync<VoteResponse>(NexusReplicationStream.Json, ct);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException)
+        {
+            return null;
+        }
+    }
+
     public Task<AppendResponse?> AppendEntriesAsync(ClusterMember peer, AppendRequest r, CancellationToken ct) =>
         Post<AppendRequest, AppendResponse>(_http, peer, "append", r, ct);
 
@@ -116,6 +133,8 @@ internal static class NexusClusterEndpoints
 
         endpoints.MapPost(apiRoot + "/raft/vote", (HttpContext h, VoteRequest r) =>
             Authorized(h) is { } raft ? Results.Json(raft.HandleVote(r), NexusReplicationStream.Json) : Results.StatusCode(403));
+        endpoints.MapPost(apiRoot + "/raft/prevote", (HttpContext h, VoteRequest r) =>
+            Authorized(h) is { } raft ? Results.Json(raft.HandlePreVote(r), NexusReplicationStream.Json) : Results.StatusCode(403));
         endpoints.MapPost(apiRoot + "/raft/append", (HttpContext h, AppendRequest r) =>
         {
             if (Authorized(h) is not { } raft) return Results.StatusCode(403);

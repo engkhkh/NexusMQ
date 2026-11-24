@@ -321,6 +321,26 @@ direction (the sandbox has no `tc netem`). Only changes that measured better bec
 - Checked locally: actionlint + shellcheck are clean, the pack job's commands produce correct packages, and the whole test suite passes against the real
   xUnit v2 assertion library compiled from source.
 
+## Raft PreVote (Phase 19)
+- Before raising its term, a server whose election timer expired asks the others "would you vote for me?" (`HandlePreVote`): the
+  same checks as a real vote (no live leader, term, log up to date), but nothing is recorded. Only with a majority of yes does it run
+  a real election. A server that is cut off gets no majority, so its term never moves.
+- Peers agree on it when they connect: the Raft socket advertises `pre-vote` next to `binary-append`, and HTTP has
+  `POST {api}/raft/prevote`. A peer without either (1.17 and older) is counted as yes without being asked, which is the old behaviour.
+- `RaftStatus.PreVoteRounds` / `ElectionsStarted` show it working.
+- Measured with three real servers, one of them cut off for 10 s through a TCP proxy and then reconnected:
+
+  | | cut-off server's term | after reconnecting |
+  |---|---|---|
+  | 1.17.0 | 1 → 7 | forced an election (term 8) and took over as leader |
+  | 1.18.0 | stayed 1 | followed the same leader, same term, no election |
+
+- `live-regression.sh` (upgrade section, also run in CI) now starts a real mixed cluster: one server of this version and two of the
+  previous release. This version is elected with the older servers' votes, the older ones elect each other, this version rejoins
+  without an election and takes over again, and all confirmed messages are kept. The checks fail when older peers are not counted.
+- Found and fixed while repeating the tests 10×: a server whose election was split stayed "candidate", and the first version of the
+  PreVote check only let followers try again, so it could get stuck. The tests now run 25× clean.
+
 ## Packaging
 `NexusMQ.Core`, `NexusMQ.Client` and `NexusMQ.AspNetCore` are NuGet packages (`pack.ps1` → `nupkg/`).
 See `docs/USING-IN-YOUR-PROJECT.md`.
@@ -344,6 +364,8 @@ See `docs/USING-IN-YOUR-PROJECT.md`.
 - **Phase 16 (done)**: binary AppendEntries between servers (negotiated), append-format counters, automatic upgrade test in CI.
 - **Phase 17 (done)**: server setup (scripts, start-with-Windows task, tested on a Windows runner), Dependabot updates, first GitHub release.
 - **Phase 18 (done)**: Windows service (no extra package), tested install/restart/crash/stop on a Windows runner; tests on xUnit v3.
-- **Phase 19 (next)**: PreVote for Raft (a server rejoining after a network cut should not force an election), found while
-  investigating a flaky test.
+- **Phase 19 (done)**: Raft PreVote: a server cut off from the network no longer raises its term, so when it comes back it follows the
+  leader again instead of forcing an election. Negotiated with peers, so mixed-version clusters keep working during an upgrade.
+- **Phase 20 (next)**: leadership transfer: hand the leader role to another server before planned maintenance (restart or update), so
+  clients see no pause for an election.
 - **Later**: a published benchmark on proper hardware.

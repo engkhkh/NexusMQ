@@ -120,13 +120,41 @@ public sealed class ClusterTests : IDisposable
         await consumer.StopProcessingAsync();
     }
 
+    [Theory]
+    [InlineData("socket")]
+    [InlineData("http")]
+    public async Task PreVote_reaches_real_servers_and_changes_nothing(string transport)
+    {
+        var leader = await LeaderId();
+        var follower = _ports.Keys.First(id => id != leader);
+        var options = new NexusClusterOptions { Secret = "cluster-secret" };
+        using var socket = new WebSocketRaftTransport(options);
+        using var http = new HttpRaftTransport(options);
+        IRaftTransport t = transport == "socket" ? socket : http;
+
+        var before = Status(follower);
+        var probe = new VoteRequest(before.Term + 10, "intruder", long.MaxValue, long.MaxValue);
+        foreach (var id in new[] { follower, leader })
+        {
+            var answer = await t.RequestPreVoteAsync(new ClusterMember { Id = id, Url = Url(id) }, probe, CancellationToken.None);
+            Assert.NotNull(answer);
+            Assert.False(answer!.Granted); // a real answer (an old server's stand-in would say yes): there is a live leader
+        }
+        Assert.Equal(before.Term, Status(follower).Term);
+        Assert.Equal(leader, await LeaderId());
+        Assert.Equal(before.Term, Status(leader).Term);
+    }
+
     [Fact]
     public async Task A_single_surviving_node_refuses_writes()
     {
         var leader = await LeaderId();
+        var term = Status(leader).Term;
         foreach (var id in _ports.Keys.Where(id => id != leader).Take(1).Append(leader).ToList()) Kill(id);
         var survivor = _servers.Single(kv => kv.Value is not null).Key;
         await Task.Delay(1500); // let it notice
+        Assert.True(Status(survivor).PreVoteRounds > 0);
+        Assert.Equal(term, Status(survivor).Term); // PreVote: alone, it never raises its term
 
         using var c = new NexusClient(Url(survivor), "master");
         var ex = await Assert.ThrowsAsync<NexusClientException>(() => c.Admin.CreateQueueAsync("x"));

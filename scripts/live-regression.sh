@@ -199,6 +199,7 @@ cluster_env() { # cluster_env <id>
     NexusMQ__Cluster__Nodes__2__Id=c NexusMQ__Cluster__Nodes__2__Url=http://localhost:5722
 }
 id_of_port() { case "$1" in 5720) echo a;; 5721) echo b;; 5722) echo c;; 5723) echo d;; esac; }
+id_of_mx() { case "$1" in 5733) echo x;; 5734) echo y;; 5735) echo z;; esac; }
 port_of_id() { case "$1" in a) echo 5720;; b) echo 5721;; c) echo 5722;; d) echo 5723;; esac; }
 wait_leader() { for _ in $(seq 1 40); do for p in "$@"; do L=$(leader_port "$p" 2>/dev/null); [[ -n "$L" ]] && { echo "$L"; return 0; }; done; sleep 0.5; done; return 1; }
 
@@ -297,6 +298,37 @@ for m in json.load(sys.stdin):
     check "binary body survived the upgrade byte for byte" test "$(big_sha http://localhost:5731)" = "$WANT"
     check "journal converted to the current format" bash -c "head -c 8 '$WORK/up-single/entities/up.journal' | grep -q NMQBIN1"
     stop up-new
+
+    # mixed-version cluster: x runs this version with a short election timeout (so it is the one that stands for leader),
+    # y and z run the older version. Elections must still work both ways (PreVote is negotiated, older peers count as yes).
+    mx_env() { # mx_env <id> <electionMs>
+      echo NexusMQ__ApiKey=master NexusMQ__Cluster__NodeId="$1" NexusMQ__Cluster__Secret=regression-secret \
+        NexusMQ__Cluster__ElectionTimeoutMs="$2" NexusMQ__Cluster__HeartbeatMs=150 \
+        NexusMQ__Cluster__Nodes__0__Id=x NexusMQ__Cluster__Nodes__0__Url=http://localhost:5733 \
+        NexusMQ__Cluster__Nodes__1__Id=y NexusMQ__Cluster__Nodes__1__Url=http://localhost:5734 \
+        NexusMQ__Cluster__Nodes__2__Id=z NexusMQ__Cluster__Nodes__2__Url=http://localhost:5735
+    }
+    mx_send() { curl -s -o /dev/null -w '%{http_code}' -H 'X-Api-Key: master' -H 'Content-Type: application/json' -d "[{\"body\":\"$2\"}]" "localhost:$1/api/send/mx"; }
+    mx_active() { curl -s -H 'X-Api-Key: master' "localhost:$1/api/stats" | python3 -c "import json,sys;print(next((s['active'] for s in json.load(sys.stdin) if s['path']=='mx'),-1))"; }
+    # shellcheck disable=SC2046
+    { start x 5733 $(mx_env x 400); SRV="$OLD_SERVER" start y 5734 $(mx_env y 3000); SRV="$OLD_SERVER" start z 5735 $(mx_env z 3000); }
+    LP=$(wait_leader 5733 5734 5735)
+    check "mixed cluster: this version is elected with the older servers' votes" test "$LP" = 5733
+    code -X PUT -H 'X-Api-Key: master' localhost:5733/api/queues/mx >/dev/null
+    check "mixed cluster: write confirmed" test "$(mx_send 5733 one)" = 200
+    stop x; sleep 1
+    LP=$(for _ in $(seq 1 40); do L=$(leader_port 5734); [[ -n "$L" && "$L" != 5733 ]] && { echo "$L"; break; }; sleep 0.5; done)
+    check "mixed cluster: the older servers elect one of themselves" test -n "$LP"
+    check "mixed cluster: write confirmed by the older servers" test "$(mx_send "$LP" two)" = 200
+    # shellcheck disable=SC2046
+    start x 5733 $(mx_env x 400); sleep 3
+    check "mixed cluster: this version rejoins without forcing an election" test "$(leader_port 5733)" = "$LP"
+    stop "$(id_of_mx "$LP")"; sleep 1
+    LP=$(for _ in $(seq 1 40); do L=$(leader_port 5733); [[ "$L" == 5733 ]] && { echo "$L"; break; }; sleep 0.5; done)
+    check "mixed cluster: this version takes over with the remaining older server's vote" test "$LP" = 5733
+    check "mixed cluster: write confirmed" test "$(mx_send 5733 three)" = 200
+    check "mixed cluster: all three confirmed messages are there" test "$(mx_active 5733)" = 3
+    for n in x y z; do stop $n; done
   fi
 fi
 
