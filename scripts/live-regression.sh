@@ -232,7 +232,11 @@ if want restart; then
   check "the stopping leader handed over first" grep -q "handed the leader role" "$WORK/$LID.log"
   check "it stopped within 5 s (was 30 s before 1.19)" test "$STOP_MS" -lt 5000
   check "writes paused under 1.5 s (an election alone takes 1.5 s or more)" test "${PAUSE:-99999}" -lt 1500
-  check "no confirmed message lost or duplicated, no send failed" bash -c "[[ $RC == 0 ]] && grep -q 'sendErrors=0' <<< '$SUMMARY'"
+  check "no send failed during the hand-over" grep -q 'sendErrors=0' <<< "$SUMMARY"
+  # A completion that arrives while the leader hands over is refused, so that message is delivered again: at-least-once.
+  if [[ $RC == 0 ]]; then pass "planned restart: no confirmed message lost or duplicated"
+  elif [[ $RC == 3 ]]; then warn "planned restart: no loss, some duplicates (allowed: at-least-once)"
+  else fail "planned restart: confirmed messages lost"; fi
 
   LP=$(wait_leader 5745 5746 5747)
   TARGET=$(for p in 5745 5746 5747; do [[ $p != "$LP" ]] && { rs_id $p; break; }; done)

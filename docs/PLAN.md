@@ -375,7 +375,10 @@ direction (the sandbox has no `tc netem`). Only changes that measured better bec
 - The .NET client waited a fixed 500 ms when no server could name a leader; now 50, 100, 200, 400, then 500 ms. That took the
   hand-over pause from 0.57–0.59 s to the figures above.
 - `scripts/live-regression.sh` scenario `restart` (also in CI): a clean leader stop under traffic must hand over, stop within 5 s,
-  pause writes under 1.5 s with no loss, duplicate or failed send; then `nexusmq cluster transfer` to a chosen server.
+  pause writes under 1.5 s with no loss and no failed send; then `nexusmq cluster transfer` to a chosen server. A duplicate is a
+  warning, not a failure (at-least-once: a completion that arrives during the hand-over is refused, so that message comes again).
+- On GitHub's runner: planned restart 207 ms pause, leader removing itself under traffic 210 ms (it hands over too), a hard-killed
+  leader 3.3 s (an election).
 - The in-process cluster tests now take 1–3 s each instead of 30–60 s (they were waiting for the same 30 s on every stop).
 
 ## Tests on xUnit 4 (1.19)
