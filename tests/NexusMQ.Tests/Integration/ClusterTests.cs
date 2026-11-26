@@ -30,7 +30,20 @@ public sealed class ClusterTests : IDisposable
         o.Cluster.ElectionTimeoutMs = 400;
         o.Cluster.HeartbeatMs = 80;
         o.Cluster.Nodes = _ports.Select(kv => new ClusterMember { Id = kv.Key, Url = Url(kv.Key) }).ToList();
+        o.Cluster.Transport = _transport;
+        // Kill() stands for a crash in these tests, so no hand-over on the way down unless a test asks for it.
+        o.Cluster.TransferLeadershipOnShutdown = _handOverOnShutdown;
     }, port: _ports[id]);
+    private string _transport = "WebSocket";
+    private bool _handOverOnShutdown;
+
+    private async Task RestartAll(string transport, bool handOver)
+    {
+        foreach (var id in _ports.Keys.ToList()) Kill(id);
+        (_transport, _handOverOnShutdown) = (transport, handOver);
+        foreach (var id in _ports.Keys.ToList()) Start(id);
+        await LeaderId();
+    }
 
     private void StartJoiner(string id, int port)
     {
@@ -143,6 +156,47 @@ public sealed class ClusterTests : IDisposable
         Assert.Equal(before.Term, Status(follower).Term);
         Assert.Equal(leader, await LeaderId());
         Assert.Equal(before.Term, Status(leader).Term);
+    }
+
+    [Theory]
+    [InlineData("WebSocket")]
+    [InlineData("Http")]
+    public async Task Leadership_is_handed_over_between_real_servers(string transport)
+    {
+        await RestartAll(transport, handOver: false);
+        using var client = new NexusClient(AllUrls, "master");
+        await client.Admin.CreateQueueAsync("handover");
+        await client.CreateSender("handover").SendMessageAsync(new NexusMessage("before"));
+        var leader = await LeaderId();
+        var target = _ports.Keys.First(id => id != leader);
+        var term = Status(leader).Term;
+
+        var result = await client.Admin.TransferLeadershipAsync(target);
+
+        Assert.Equal(target, result.GetProperty("leader").GetString());
+        Assert.Equal(Url(target), result.GetProperty("url").GetString());
+        Assert.Equal(target, await LeaderId());
+        Assert.Equal(term + 1, Status(target).Term); // one election, nothing else
+        Assert.Equal(1, Status(target).TransfersIn);
+        await client.CreateSender("handover").SendMessageAsync(new NexusMessage("after")); // the client follows by itself
+        Assert.Equal(2, (await client.Admin.GetStatsAsync()).Single(s => s.Path == "handover").Active);
+        var unknown = await Assert.ThrowsAsync<NexusClientException>(() => client.Admin.TransferLeadershipAsync("nobody"));
+        Assert.Contains("not a voting member", unknown.Message);
+    }
+
+    [Fact]
+    public async Task A_leader_shut_down_cleanly_hands_over_first()
+    {
+        await RestartAll("WebSocket", handOver: true);
+        var leader = await LeaderId();
+        var stopping = System.Diagnostics.Stopwatch.StartNew();
+        Kill(leader); // a clean stop (service stop, Ctrl+C, container stop)
+        // Before 1.19 this took 30 s: the host waited for the other servers' Raft connections to close, and kept the
+        // cluster without a working leader meanwhile.
+        Assert.True(stopping.Elapsed < TimeSpan.FromSeconds(5), $"stopping the leader took {stopping.Elapsed.TotalSeconds:0.0} s");
+        var next = await LeaderId();
+        Assert.NotEqual(leader, next);
+        Assert.Equal(1, Status(next).TransfersIn); // handed over, not elected after a timeout
     }
 
     [Fact]

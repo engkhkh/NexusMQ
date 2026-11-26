@@ -14,7 +14,7 @@ namespace NexusMQ.AspNetCore;
 
 /// <summary>What a peer's Raft socket understands beyond JSON votes and appends.</summary>
 [Flags]
-internal enum PeerFeatures { None = 0, BinaryAppend = 1, PreVote = 2 }
+internal enum PeerFeatures { None = 0, BinaryAppend = 1, PreVote = 2, TimeoutNow = 4 }
 
 /// <summary>
 /// Raft RPCs between cluster members over one long-lived WebSocket per peer (<c>{api}/raft/ws</c>).
@@ -28,13 +28,14 @@ internal enum PeerFeatures { None = 0, BinaryAppend = 1, PreVote = 2 }
 /// </summary>
 internal sealed class WebSocketRaftTransport(NexusClusterOptions options) : IRaftTransport, IDisposable
 {
-    internal const byte KindVote = 1, KindAppend = 2, KindAppendBinary = 3, KindPreVote = 4, ReplyFlag = 0x80;
+    internal const byte KindVote = 1, KindAppend = 2, KindAppendBinary = 3, KindPreVote = 4, KindTimeoutNow = 5, ReplyFlag = 0x80;
     /// <summary>Response header on the upgrade: what this server understands beyond JSON votes and appends.</summary>
     internal const string FeaturesHeader = "X-NexusMQ-Raft-Features";
     internal const string BinaryAppendFeature = "binary-append";
     internal const string PreVoteFeature = "pre-vote";
+    internal const string TimeoutNowFeature = "timeout-now";
     /// <summary>What this server advertises on the upgrade response.</summary>
-    internal const string ServerFeatures = BinaryAppendFeature + ", " + PreVoteFeature;
+    internal const string ServerFeatures = BinaryAppendFeature + ", " + PreVoteFeature + ", " + TimeoutNowFeature;
     private const int HeaderSize = 9;
 
     private readonly HttpRaftTransport _http = new(options);
@@ -42,6 +43,20 @@ internal sealed class WebSocketRaftTransport(NexusClusterOptions options) : IRaf
 
     public Task<VoteResponse?> RequestVoteAsync(ClusterMember peer, VoteRequest r, CancellationToken ct) =>
         CallAsync<VoteRequest, VoteResponse>(peer, KindVote, r, ct, () => _http.RequestVoteAsync(peer, r, ct));
+
+    /// <summary>A peer that did not advertise <see cref="TimeoutNowFeature"/> (an older version) cannot take over: null.</summary>
+    public async Task<TimeoutNowResponse?> TimeoutNowAsync(ClusterMember peer, TimeoutNowRequest r, CancellationToken ct)
+    {
+        var skipped = false;
+        var answer = await CallAsync<TimeoutNowResponse>(peer, features =>
+            {
+                if (features.HasFlag(PeerFeatures.TimeoutNow)) return (KindTimeoutNow, JsonSerializer.SerializeToUtf8Bytes(r, NexusReplicationStream.Json));
+                skipped = true;
+                return (0, []);
+            },
+            ct, () => _http.TimeoutNowAsync(peer, r, ct));
+        return skipped ? null : answer;
+    }
 
     /// <summary>A peer that did not advertise <see cref="PreVoteFeature"/> (an older version) answers yes without being asked.</summary>
     public async Task<VoteResponse?> RequestPreVoteAsync(ClusterMember peer, VoteRequest r, CancellationToken ct)
@@ -239,6 +254,7 @@ internal sealed class WebSocketRaftTransport(NexusClusterOptions options) : IRaf
         var f = PeerFeatures.None;
         if (all.Contains(BinaryAppendFeature, StringComparer.OrdinalIgnoreCase)) f |= PeerFeatures.BinaryAppend;
         if (all.Contains(PreVoteFeature, StringComparer.OrdinalIgnoreCase)) f |= PeerFeatures.PreVote;
+        if (all.Contains(TimeoutNowFeature, StringComparer.OrdinalIgnoreCase)) f |= PeerFeatures.TimeoutNow;
         return f;
     }
 
@@ -269,7 +285,8 @@ internal sealed class WebSocketRaftTransport(NexusClusterOptions options) : IRaf
         http.Response.Headers[FeaturesHeader] = ServerFeatures; // sent with the 101 upgrade response
         using var ws = await http.WebSockets.AcceptWebSocketAsync();
         var buffer = new ArrayBufferWriter<byte>(64 * 1024);
-        var stop = http.RequestAborted;
+        using var shutdown = NexusShutdown.Linked(http);
+        var stop = shutdown.Token;
         try
         {
             while (ws.State == WebSocketState.Open && !stop.IsCancellationRequested)
@@ -291,6 +308,8 @@ internal sealed class WebSocketRaftTransport(NexusClusterOptions options) : IRaf
                 {
                     KindVote => JsonSerializer.SerializeToUtf8Bytes(
                         raft.HandleVote(JsonSerializer.Deserialize<VoteRequest>(json.Span, NexusReplicationStream.Json)!), NexusReplicationStream.Json),
+                    KindTimeoutNow => JsonSerializer.SerializeToUtf8Bytes(
+                        raft.HandleTimeoutNow(JsonSerializer.Deserialize<TimeoutNowRequest>(json.Span, NexusReplicationStream.Json)!), NexusReplicationStream.Json),
                     KindPreVote => JsonSerializer.SerializeToUtf8Bytes(
                         raft.HandlePreVote(JsonSerializer.Deserialize<VoteRequest>(json.Span, NexusReplicationStream.Json)!), NexusReplicationStream.Json),
                     KindAppend => JsonSerializer.SerializeToUtf8Bytes(

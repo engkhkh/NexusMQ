@@ -247,7 +247,15 @@ try
                     break;
                 }
                 case "remove": r = await admin.RemoveClusterMemberAsync(a.Required("server id"), cts.Token); break;
-                default: throw new CliException($"Unknown cluster command '{sub}'. Use members, add or remove.");
+                case "transfer":
+                {
+                    var to = a.Next();
+                    var t = await admin.TransferLeadershipAsync(to, cts.Token);
+                    if (json) { Console.WriteLine(t.GetRawText()); return 0; }
+                    Console.WriteLine($"{t.GetProperty("leader").GetString()} is now the leader ({t.GetProperty("url").GetString()})");
+                    return 0;
+                }
+                default: throw new CliException($"Unknown cluster command '{sub}'. Use members, add, remove or transfer.");
             }
             if (json) { Console.WriteLine(r.GetRawText()); break; }
             var members = r.ValueKind == JsonValueKind.Array ? r : r.GetProperty("members");

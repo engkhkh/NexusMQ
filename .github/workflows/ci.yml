@@ -43,10 +43,9 @@ jobs:
 
       - name: Test
         run: >
-          dotnet test tests/NexusMQ.Tests/NexusMQ.Tests.csproj -c Release --no-build
-          --logger "trx;LogFileName=results.trx"
+          dotnet test --project tests/NexusMQ.Tests/NexusMQ.Tests.csproj -c Release --no-build
           --results-directory TestResults
-          --blame-hang-timeout 5m
+          --report-xunit-trx --report-xunit-trx-filename results.trx
 
       - name: Upload test results
         if: always()
@@ -81,7 +80,7 @@ jobs:
       # Samples, CLI, access keys, rate limits, HTTPS, primary/standby failover, Raft leader kill, membership changes,
       # minority refusal, upgrade from the previous version and benchmarks, each against real servers.
       - name: Run scripts/live-regression.sh
-        run: ONLY="samples cli keys https ha cluster upgrade bench" WORK="$RUNNER_TEMP/regression" ./scripts/live-regression.sh
+        run: ONLY="samples cli keys https ha cluster restart upgrade bench" WORK="$RUNNER_TEMP/regression" ./scripts/live-regression.sh
 
       - name: Upload server logs
         if: failure()

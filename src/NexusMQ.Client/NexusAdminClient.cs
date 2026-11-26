@@ -90,6 +90,14 @@ public sealed class NexusAdminClient
     public Task<System.Text.Json.JsonElement> RemoveClusterMemberAsync(string id, CancellationToken ct = default) =>
         _client.SendAsync<System.Text.Json.JsonElement>(HttpMethod.Delete, $"api/cluster/members/{E(id)}", null, ct);
 
+    /// <summary>
+    /// Hand the leader role to another server, e.g. before restarting the leader. <paramref name="to"/>: a member id, or
+    /// <c>null</c> for the most up-to-date one. Writes pause for about one round trip. Returns <c>{ leader, url }</c>.
+    /// </summary>
+    public Task<System.Text.Json.JsonElement> TransferLeadershipAsync(string? to = null, CancellationToken ct = default) =>
+        _client.SendAsync<System.Text.Json.JsonElement>(HttpMethod.Post,
+            "api/cluster/leader/transfer" + (string.IsNullOrEmpty(to) ? "" : "?to=" + E(to)), null, ct);
+
     // ------------------------------------------------------------------ access keys (needs a broker-wide Manage key)
 
     public Task<List<NexusAccessKeyInfo>> ListKeysAsync(CancellationToken ct = default) =>

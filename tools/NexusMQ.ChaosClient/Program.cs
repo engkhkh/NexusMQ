@@ -23,6 +23,9 @@ await using var client = new NexusClient(urls, key);
 var sentOk = new ConcurrentDictionary<int, bool>();
 var received = new ConcurrentDictionary<int, int>();
 int sendErrors = 0, handlerErrors = 0;
+// Longest time between two confirmed sends: what an application notices during a leader change.
+var clock = System.Diagnostics.Stopwatch.StartNew();
+long lastOkMs = 0, longestPauseMs = 0;
 using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(seconds));
 
 await using var consumer = client.CreateProcessor(queue, new NexusProcessorOptions { MaxConcurrentCalls = 4 });
@@ -35,7 +38,14 @@ var producer = Task.Run(async () =>
     var sender = client.CreateSender(queue);
     for (var i = 0; !stop.IsCancellationRequested; i++)
     {
-        try { await sender.SendMessageAsync(new NexusMessage(i.ToString()) { MessageId = $"chaos-{i}" }); sentOk[i] = true; }
+        try
+        {
+            await sender.SendMessageAsync(new NexusMessage(i.ToString()) { MessageId = $"chaos-{i}" });
+            sentOk[i] = true;
+            var now = clock.ElapsedMilliseconds;
+            if (lastOkMs > 0) longestPauseMs = Math.Max(longestPauseMs, now - lastOkMs);
+            lastOkMs = now;
+        }
         catch { Interlocked.Increment(ref sendErrors); }
         if (intervalMs > 0) await Task.Delay(intervalMs);
     }
@@ -50,6 +60,7 @@ var monitor = Task.Run(async () =>
 });
 await producer;
 await monitor;
+longestPauseMs = Math.Max(longestPauseMs, clock.ElapsedMilliseconds - lastOkMs); // a pause still going at the end counts too
 
 // Drain: wait until everything confirmed has arrived (or 20 s).
 var drainUntil = DateTime.UtcNow.AddSeconds(20);
@@ -59,6 +70,6 @@ await consumer.StopProcessingAsync();
 var missing = sentOk.Keys.Where(k => !received.ContainsKey(k)).OrderBy(k => k).ToList();
 var duplicates = received.Count(kv => kv.Value > 1);
 Console.WriteLine($"SUMMARY sentOk={sentOk.Count} received={received.Count} missing={missing.Count} [{string.Join(",", missing.Take(15))}] " +
-                  $"duplicates={duplicates} sendErrors={sendErrors} handlerErrors={handlerErrors} finalServer={client.CurrentEndpoint}");
+                  $"duplicates={duplicates} sendErrors={sendErrors} handlerErrors={handlerErrors} longestPauseMs={longestPauseMs} finalServer={client.CurrentEndpoint}");
 if (missing.Count > 0 || sentOk.Count == 0) return 1;
 return duplicates > 0 ? 3 : 0;

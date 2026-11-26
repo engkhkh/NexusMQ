@@ -341,6 +341,49 @@ direction (the sandbox has no `tc netem`). Only changes that measured better bec
 - Found and fixed while repeating the tests 10×: a server whose election was split stayed "candidate", and the first version of the
   PreVote check only let followers try again, so it could get stuck. The tests now run 25× clean.
 
+## Compared with other Raft systems, leadership transfer (Phase 20, 1.19)
+- Compared NexusMQ's elections with etcd raft, HashiCorp Raft, Kafka KRaft (KIP-996) and RabbitMQ Ra; the table is in
+  `docs/CLUSTER.md`. Main gap: **leadership transfer** (Raft thesis §3.10), which all of them except KRaft have.
+- `RaftNode.TransferLeadershipAsync(target?)`: refuse new writes (retryable 503), wait until the target has every entry, send
+  `TimeoutNow`; the target campaigns at once, skipping PreVote, with `Transfer` set on its vote so voters skip the leader check.
+  Given up after about two election timeouts, and the leader carries on.
+- `HandleTimeoutNow` only accepts its current leader's request, in the current term, with its log complete (the raft-rs 234
+  late-message problem cannot start an election).
+- Negotiated: socket call kind 5 with the `timeout-now` feature, `POST {api}/raft/timeout-now`; older servers cannot be targets.
+- Uses: `nexusmq cluster transfer [id]`, **make leader** in the dashboard, `POST /api/cluster/leader/transfer`, automatic on a clean
+  leader shutdown (`TransferLeadershipOnShutdown`, an `ApplicationStopping` hook) and when the leader removes itself.
+- `Cluster:PreVote` option (default on), as in etcd, Ratis and openraft.
+- Tests (each sabotage-checked): hand-over to a named server and to the most up-to-date one, a transfer that cannot finish is
+  given up and writes resume, stray/late TimeoutNow ignored, self-removal hands over, Ra issue 439 scenario, PreVote off; on real
+  servers over both links and on a clean shutdown. The crash tests keep the hand-over off so they still test crashes.
+
+## Planned leader restart, measured (Phase 21, 1.19)
+- Measured a clean stop of the leader (SIGTERM, like a service stop or `docker stop`) of three real servers under steady
+  traffic (`nexusmq-chaos` now reports `longestPauseMs`, the longest gap between confirmed sends, counting a gap still open at the end):
+
+  | | stopping took | writes paused |
+  |---|---|---|
+  | 1.18.0 | 30.1 s | 30.2 s |
+  | 1.19, hand-over off | 0.22–0.23 s | 2.7–2.8 s (an election) |
+  | 1.19, hand-over on (default) | 0.22–0.44 s | 0.23–0.31 s |
+
+- **Found by measuring: stopping any cluster server took 30 s**, and a stopping leader blocked writes all that time. The web host
+  waits up to 30 s for open requests on shutdown, and the other servers' Raft WebSocket links (and clients' push connections, and a
+  standby's stream) only ended when the other side closed them. Meanwhile the stopping leader kept sending heartbeats, so no one
+  else took over. Now one shutdown hook runs in order: hand over (it needs those links), stop Raft (`RaftNode.Stop`: no heartbeats,
+  votes or elections, as if gone), then end the long-lived connections (`NexusNode.Closing`).
+- The .NET client waited a fixed 500 ms when no server could name a leader; now 50, 100, 200, 400, then 500 ms. That took the
+  hand-over pause from 0.57–0.59 s to the figures above.
+- `scripts/live-regression.sh` scenario `restart` (also in CI): a clean leader stop under traffic must hand over, stop within 5 s,
+  pause writes under 1.5 s with no loss, duplicate or failed send; then `nexusmq cluster transfer` to a chosen server.
+- The in-process cluster tests now take 1–3 s each instead of 30–60 s (they were waiting for the same 30 s on every stop).
+
+## Tests on xUnit 4 (1.19)
+- xUnit 4 runs on Microsoft Testing Platform v2, and the .NET 10 SDK needs `global.json` (`"test": {"runner":
+  "Microsoft.Testing.Platform"}`) for `dotnet test` to use it. The VSTest packages (Microsoft.NET.Test.Sdk, xunit.runner.visualstudio,
+  coverlet.collector) were removed. Run the tests with `dotnet test --project tests/NexusMQ.Tests` or Visual Studio 2026's Test Explorer.
+- CI writes the results as TRX with xUnit's own reporter (`--report-xunit-trx`).
+
 ## Packaging
 `NexusMQ.Core`, `NexusMQ.Client` and `NexusMQ.AspNetCore` are NuGet packages (`pack.ps1` → `nupkg/`).
 See `docs/USING-IN-YOUR-PROJECT.md`.
@@ -366,6 +409,9 @@ See `docs/USING-IN-YOUR-PROJECT.md`.
 - **Phase 18 (done)**: Windows service (no extra package), tested install/restart/crash/stop on a Windows runner; tests on xUnit v3.
 - **Phase 19 (done)**: Raft PreVote: a server cut off from the network no longer raises its term, so when it comes back it follows the
   leader again instead of forcing an election. Negotiated with peers, so mixed-version clusters keep working during an upgrade.
-- **Phase 20 (next)**: leadership transfer: hand the leader role to another server before planned maintenance (restart or update), so
-  clients see no pause for an election.
+- **Phase 20 (done)**: compared with etcd, HashiCorp Raft, Kafka KRaft and RabbitMQ Ra; leadership transfer (CLI, API,
+  dashboard, clean shutdown, self-removal) and a PreVote switch.
+- **Phase 21 (done)**: measured a planned leader restart; fixed the 30 s shutdown wait; faster client retries; regression scenario.
+  Tests on xUnit 4; GitHub Actions updates (checkout 7, setup-qemu 4, build-push 7).
+- **Phase 22 (next)**: read-only queries (peek, stats) on followers, so dashboards and monitoring don't all load the leader.
 - **Later**: a published benchmark on proper hardware.

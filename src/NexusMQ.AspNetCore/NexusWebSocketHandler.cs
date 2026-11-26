@@ -150,7 +150,8 @@ internal sealed class NexusWebSocketHandler
         {
             BinaryBodies = http.Request.Query["binaryBodies"] is { Count: > 0 } b && (b[0] == "1" || string.Equals(b[0], "true", StringComparison.OrdinalIgnoreCase))
         };
-        await handler.RunAsync(http.RequestAborted);
+        using var shutdown = NexusShutdown.Linked(http); // clients reconnect (to the new leader) instead of holding up the shutdown
+        await handler.RunAsync(shutdown.Token);
     }
 
     private async Task RunAsync(CancellationToken aborted)

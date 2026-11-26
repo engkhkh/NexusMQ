@@ -7,7 +7,7 @@
 services:
   nexusmq:
     build: .
-    image: nexusmq:1.18.0
+    image: nexusmq:1.19.0
     ports:
       - "5680:5680"
     volumes:

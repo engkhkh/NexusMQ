@@ -134,6 +134,7 @@ internal static class Help
           nexusmq cluster members
           nexusmq cluster add <id> <url>      start the new server first with NexusMQ:Cluster:Join=true
           nexusmq cluster remove <id>         then shut that server down
+          nexusmq cluster transfer [id]       hand the leader role over (to <id>, or the most up-to-date server)
 
         Examples:
           nexusmq create queue orders --max-delivery 5

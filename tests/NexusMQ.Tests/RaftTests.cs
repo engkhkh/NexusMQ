@@ -37,6 +37,12 @@ internal sealed class FakeNetwork : IRaftTransport
         return Root.NoPreVote.ContainsKey(peer.Id) ? new VoteResponse(r.Term - 1, true) : Root.Nodes[peer.Id].HandlePreVote(r);
     }
 
+    public async Task<TimeoutNowResponse?> TimeoutNowAsync(ClusterMember peer, TimeoutNowRequest r, CancellationToken ct)
+    {
+        await Task.Yield();
+        return Reachable(peer.Id) ? Root.Nodes[peer.Id].HandleTimeoutNow(r) : null;
+    }
+
     public async Task<AppendResponse?> AppendEntriesAsync(ClusterMember peer, AppendRequest r, CancellationToken ct)
     {
         await Task.Yield();
@@ -269,6 +275,155 @@ public sealed class RaftTests : IDisposable
         _net.Down[leader.Id] = true;
         var fresh = await Leader(excluding: leader.Id);
         Assert.NotEqual(leader.Id, fresh.Id);
+    }
+
+    // ---------------------------------------------------------------- leadership transfer
+
+    [Fact]
+    public async Task Leadership_is_handed_to_the_named_server()
+    {
+        StartAll();
+        var leader = await Leader();
+        var (i1, t1) = leader.Propose(Put("q", 1, "before"));
+        Assert.True(await leader.WaitCommittedAsync(i1, t1, TimeSpan.FromSeconds(5)));
+        var target = _net.Nodes.Values.First(n => n.Id != leader.Id);
+        var term = leader.CurrentTerm;
+
+        var newLeader = await leader.TransferLeadershipAsync(target.Id);
+
+        Assert.Equal(target.Id, newLeader);
+        await Eventually(() => target.IsReadyLeader);
+        Assert.Equal(term + 1, target.CurrentTerm);              // exactly one election
+        Assert.Equal(RaftRole.Follower, leader.Role);
+        Assert.Equal(1, leader.Status().TransfersOut);
+        Assert.Equal(1, target.Status().TransfersIn);
+        var (i2, t2) = target.Propose(Put("q", 2, "after"));      // and the new leader takes writes
+        Assert.True(await target.WaitCommittedAsync(i2, t2, TimeSpan.FromSeconds(5)));
+        await Eventually(() => _net.Nodes.Keys.All(id => Count(id, "q") == 2));
+    }
+
+    [Fact]
+    public async Task Transfer_without_a_target_picks_an_up_to_date_server()
+    {
+        StartAll();
+        var leader = await Leader();
+        var behind = _net.Nodes.Values.First(n => n.Id != leader.Id);
+        var other = _net.Nodes.Values.First(n => n.Id != leader.Id && n.Id != behind.Id);
+        _net.Down[behind.Id] = true;
+        for (var i = 1; i <= 5; i++)
+        {
+            var (ix, tx) = leader.Propose(Put("q", i, "x"));
+            Assert.True(await leader.WaitCommittedAsync(ix, tx, TimeSpan.FromSeconds(5)));
+        }
+        Assert.Equal(other.Id, await leader.TransferLeadershipAsync(null));
+    }
+
+    [Fact]
+    public async Task A_transfer_that_cannot_finish_is_abandoned_and_the_leader_carries_on()
+    {
+        StartAll();
+        var leader = await Leader();
+        var target = _net.Nodes.Values.First(n => n.Id != leader.Id);
+        _net.Down[target.Id] = true;
+        var (i0, t0) = leader.Propose(Put("q", 1, "x")); // the target misses this, so it is never caught up
+        Assert.True(await leader.WaitCommittedAsync(i0, t0, TimeSpan.FromSeconds(5)));
+
+        var transfer = leader.TransferLeadershipAsync(target.Id);
+        await Eventually(() => leader.Status().TransferringTo == target.Id);
+        var refused = Assert.Throws<NexusException>(() => leader.Propose(Put("q", 2, "during")));
+        Assert.Equal(NexusErrorCode.Standby, refused.Code); // clients retry; nothing half-written
+
+        var failed = await Assert.ThrowsAsync<NexusException>(() => transfer);
+        Assert.Equal(NexusErrorCode.NotCommitted, failed.Code);
+        Assert.True(leader.IsReadyLeader);
+        Assert.Null(leader.Status().TransferringTo);
+        var (i1, t1) = leader.Propose(Put("q", 2, "after")); // writes accepted again
+        Assert.True(await leader.WaitCommittedAsync(i1, t1, TimeSpan.FromSeconds(5)));
+    }
+
+    [Fact]
+    public async Task A_stray_or_late_TimeoutNow_starts_no_election()
+    {
+        StartAll();
+        var leader = await Leader();
+        var follower = _net.Nodes.Values.First(n => n.Id != leader.Id);
+        await Eventually(() => follower.Status().LeaderId == leader.Id);
+        var term = follower.CurrentTerm;
+        Assert.False(follower.HandleTimeoutNow(new TimeoutNowRequest(term - 1, leader.Id, 0)).Accepted);     // old term
+        Assert.False(follower.HandleTimeoutNow(new TimeoutNowRequest(term, "someone-else", 0)).Accepted);   // not our leader
+        Assert.False(follower.HandleTimeoutNow(new TimeoutNowRequest(term, leader.Id, long.MaxValue)).Accepted); // we're behind
+        Assert.False(leader.HandleTimeoutNow(new TimeoutNowRequest(term, leader.Id, 0)).Accepted);           // already leader
+        await Task.Delay(400);
+        Assert.Equal(term, follower.CurrentTerm);
+        Assert.True(leader.IsReadyLeader);
+    }
+
+    [Fact]
+    public async Task A_leader_that_removes_itself_hands_over_at_once()
+    {
+        StartAll();
+        var leader = await Leader();
+        var started = DateTime.UtcNow;
+        await leader.RemoveServerAsync(leader.Id);
+        var next = await Leader(excluding: leader.Id);
+        Assert.Equal(1, next.Status().TransfersIn); // handed over, no election timeout to wait for
+        Assert.True(DateTime.UtcNow - started < TimeSpan.FromSeconds(2));
+    }
+
+    [Fact]
+    public async Task Longer_log_wins_against_a_shorter_log_candidate()
+    {
+        // RabbitMQ Ra issue 439: a candidate with a shorter log and a PreVoting member with a longer log could block each
+        // other forever. Here b has an entry c lacks; with a gone, b must still become leader.
+        StartAll();
+        var leader = await Leader();
+        var b = _net.Nodes.Values.First(n => n.Id != leader.Id);
+        var c = _net.Nodes.Values.First(n => n.Id != leader.Id && n.Id != b.Id);
+        _net.Down[c.Id] = true;
+        var (ix, tx) = leader.Propose(Put("q", 1, "only-on-a-and-b"));
+        Assert.True(await leader.WaitCommittedAsync(ix, tx, TimeSpan.FromSeconds(5)));
+        _net.Down[leader.Id] = true;
+        await Task.Delay(500); // c, alone, keeps timing out
+        _net.Down.TryRemove(c.Id, out _);
+        var fresh = await Leader(excluding: leader.Id);
+        Assert.Equal(b.Id, fresh.Id);
+        await Eventually(() => Count(c.Id, "q") == 1);
+    }
+
+    [Fact]
+    public async Task PreVote_can_be_turned_off()
+    {
+        var noPreVote = new RaftOptions
+        {
+            ElectionTimeout = Fast.ElectionTimeout, HeartbeatInterval = Fast.HeartbeatInterval, MaxLogEntries = Fast.MaxLogEntries,
+            PreVote = false
+        };
+        StartAll(noPreVote);
+        var leader = await Leader();
+        var follower = _net.Nodes.Values.First(n => n.Id != leader.Id);
+        var term = leader.CurrentTerm;
+        _net.Down[follower.Id] = true;
+        await Eventually(() => follower.CurrentTerm > term + 2); // the behaviour before 1.18: the term climbs
+        Assert.Equal(0, follower.Status().PreVoteRounds);
+    }
+
+    [Fact]
+    public async Task A_stopped_server_takes_no_part_in_elections()
+    {
+        StartAll();
+        var leader = await Leader();
+        var follower = _net.Nodes.Values.First(n => n.Id != leader.Id);
+        follower.Stop();
+        Assert.Equal(RaftRole.Follower, follower.Role);
+        foreach (var id in _net.Nodes.Keys.Where(id => id != follower.Id)) _net.Down[id] = true; // nothing else changes it
+        await Task.Delay(400); // no leader contact any more: a running server would say yes
+        var probe = new VoteRequest(follower.CurrentTerm + 1, "x", long.MaxValue, long.MaxValue);
+        Assert.False(follower.HandlePreVote(probe).Granted);
+        Assert.False(follower.HandleVote(probe).Granted);
+        Assert.False(follower.HandleTimeoutNow(new TimeoutNowRequest(follower.CurrentTerm, leader.Id, 0)).Accepted);
+
+        leader.Stop();                                     // a leader that stops steps down at once
+        Assert.Equal(RaftRole.Follower, leader.Role);
     }
 
     public void Dispose()

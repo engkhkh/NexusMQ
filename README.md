@@ -101,7 +101,7 @@ Prometheus on http://localhost:9090, Grafana on http://localhost:3000 (admin / a
 dotnet run --project src/NexusMQ.Server            # broker + dashboard on http://localhost:5680
 dotnet run --project samples/Sample.Producer
 dotnet run --project samples/Sample.Consumer
-dotnet test
+dotnet test --project tests/NexusMQ.Tests     # xUnit 4 on Microsoft Testing Platform (see global.json)
 ```
 
 ## Using the client SDK

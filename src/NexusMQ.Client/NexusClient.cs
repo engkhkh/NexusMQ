@@ -127,6 +127,16 @@ public sealed class NexusClient : IAsyncDisposable, IDisposable
     internal long BinarySendsRefusedUntil;
 
     /// <summary>Send with a body made fresh for each attempt (a retry or failover needs new content).</summary>
+    /// <summary>
+    /// Wait before another round over the servers while none can name a leader: 50, 100, 200, 400, then 500 ms. A leader
+    /// hand-over or a quick election is noticed within tens of milliseconds; a long outage is not hammered.
+    /// </summary>
+    private TimeSpan FailoverPause(int failovers)
+    {
+        var round = Math.Max(0, failovers - _endpoints.Count);
+        return TimeSpan.FromMilliseconds(Math.Min(500, 50 << Math.Min(round, 4)));
+    }
+
     internal async Task<T> SendAsync<T>(HttpMethod method, string url, Func<HttpContent>? content, CancellationToken ct)
     {
         var failovers = 0;
@@ -146,7 +156,7 @@ public sealed class NexusClient : IAsyncDisposable, IDisposable
             catch (HttpRequestException) when (!ct.IsCancellationRequested && (++failovers < _endpoints.Count || KeepWaiting()))
             {
                 MarkFailed(endpoint); // unreachable: try the next server
-                if (failovers >= _endpoints.Count) await Task.Delay(TimeSpan.FromMilliseconds(500), ct).ConfigureAwait(false);
+                if (failovers >= _endpoints.Count) await Task.Delay(FailoverPause(failovers), ct).ConfigureAwait(false);
                 continue;
             }
             using (resp)
@@ -169,7 +179,7 @@ public sealed class NexusClient : IAsyncDisposable, IDisposable
                         var hinted = resp.Headers.TryGetValues("X-NexusMQ-Leader", out var h) && FollowLeaderHint(h.FirstOrDefault())
                                      && CurrentEndpoint != endpoint;
                         if (!hinted) MarkFailed(endpoint);
-                        if (!hinted && failovers >= _endpoints.Count) await Task.Delay(TimeSpan.FromMilliseconds(500), ct).ConfigureAwait(false);
+                        if (!hinted && failovers >= _endpoints.Count) await Task.Delay(FailoverPause(failovers), ct).ConfigureAwait(false);
                         continue;
                     }
                     var retryAfter = resp.Headers.RetryAfter?.Delta;

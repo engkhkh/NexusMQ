@@ -46,6 +46,16 @@ public sealed class NexusClusterOptions
     /// be lost if the leader failed. Turning it off saves a little latency.
     /// </summary>
     public bool DeliverOnlyCommitted { get; set; } = true;
+    /// <summary>
+    /// Before an election, ask the others whether they would vote (Raft PreVote, default on), so a server that was cut off
+    /// rejoins without forcing an election. Turn off only to get the behaviour of 1.17 and older.
+    /// </summary>
+    public bool PreVote { get; set; } = true;
+    /// <summary>
+    /// When the leader shuts down cleanly (service stop, Ctrl+C, a container stop), hand the leader role to another server first
+    /// (default on), so clients wait one round trip instead of an election timeout.
+    /// </summary>
+    public bool TransferLeadershipOnShutdown { get; set; } = true;
 
     public bool Enabled => Nodes.Count > 0 || Join;
 }
@@ -103,6 +113,10 @@ internal sealed class HttpRaftTransport : IRaftTransport, IDisposable
         }
     }
 
+    /// <summary>A peer without the endpoint (an older version) cannot take over: null.</summary>
+    public Task<TimeoutNowResponse?> TimeoutNowAsync(ClusterMember peer, TimeoutNowRequest r, CancellationToken ct) =>
+        Post<TimeoutNowRequest, TimeoutNowResponse>(_http, peer, "timeout-now", r, ct);
+
     public Task<AppendResponse?> AppendEntriesAsync(ClusterMember peer, AppendRequest r, CancellationToken ct) =>
         Post<AppendRequest, AppendResponse>(_http, peer, "append", r, ct);
 
@@ -135,6 +149,8 @@ internal static class NexusClusterEndpoints
             Authorized(h) is { } raft ? Results.Json(raft.HandleVote(r), NexusReplicationStream.Json) : Results.StatusCode(403));
         endpoints.MapPost(apiRoot + "/raft/prevote", (HttpContext h, VoteRequest r) =>
             Authorized(h) is { } raft ? Results.Json(raft.HandlePreVote(r), NexusReplicationStream.Json) : Results.StatusCode(403));
+        endpoints.MapPost(apiRoot + "/raft/timeout-now", (HttpContext h, TimeoutNowRequest r) =>
+            Authorized(h) is { } raft ? Results.Json(raft.HandleTimeoutNow(r), NexusReplicationStream.Json) : Results.StatusCode(403));
         endpoints.MapPost(apiRoot + "/raft/append", (HttpContext h, AppendRequest r) =>
         {
             if (Authorized(h) is not { } raft) return Results.StatusCode(403);

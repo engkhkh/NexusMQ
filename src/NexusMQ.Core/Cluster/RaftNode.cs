@@ -12,7 +12,14 @@ public sealed class ClusterMember
     public string Url { get; set; } = "";
 }
 
-public sealed record VoteRequest(long Term, string CandidateId, long LastLogIndex, long LastLogTerm);
+/// <summary>
+/// A vote request. <c>Transfer</c>: the candidate was asked to take over by the current leader (leadership transfer), so
+/// voters skip the "I still hear from a leader" check for it, as etcd, HashiCorp Raft and Ratis do. Older servers ignore it.
+/// </summary>
+public sealed record VoteRequest(long Term, string CandidateId, long LastLogIndex, long LastLogTerm, bool Transfer = false);
+/// <summary>Leader → chosen follower: "you are caught up, start an election now" (Raft thesis §3.10).</summary>
+public sealed record TimeoutNowRequest(long Term, string LeaderId, long LastLogIndex);
+public sealed record TimeoutNowResponse(long Term, bool Accepted, string? Reason = null);
 public sealed record VoteResponse(long Term, bool Granted);
 public sealed record AppendRequest(long Term, string LeaderId, long PrevLogIndex, long PrevLogTerm, List<RaftEntry> Entries, long LeaderCommit);
 public sealed record AppendResponse(long Term, bool Success, long MatchIndex, long ConflictIndex);
@@ -31,6 +38,9 @@ public interface IRaftTransport
     /// </summary>
     Task<VoteResponse?> RequestPreVoteAsync(ClusterMember peer, VoteRequest request, CancellationToken ct) =>
         Task.FromResult<VoteResponse?>(new VoteResponse(request.Term - 1, true));
+    /// <summary>Leadership transfer. <c>null</c>: not reachable, or the peer does not support it (an older version).</summary>
+    Task<TimeoutNowResponse?> TimeoutNowAsync(ClusterMember peer, TimeoutNowRequest request, CancellationToken ct) =>
+        Task.FromResult<TimeoutNowResponse?>(null);
     Task<AppendResponse?> AppendEntriesAsync(ClusterMember peer, AppendRequest request, CancellationToken ct);
     Task<SnapshotResponse?> InstallSnapshotAsync(ClusterMember peer, SnapshotRequest request, CancellationToken ct);
 }
@@ -55,6 +65,11 @@ public sealed class RaftOptions
     public bool JoinExisting { get; set; }
     /// <summary>How long a new server may take to catch up (as a non-voting learner) before it is added.</summary>
     public TimeSpan CatchUpTimeout { get; set; } = TimeSpan.FromSeconds(60);
+    /// <summary>
+    /// Ask "would you vote for me?" before each election (default on; etcd, HashiCorp Raft, Ratis and Kafka KRaft do the same).
+    /// Off: elections raise the term straight away, as before 1.18.
+    /// </summary>
+    public bool PreVote { get; set; } = true;
 }
 
 public sealed class RaftStatus
@@ -82,6 +97,11 @@ public sealed class RaftStatus
     public long PreVoteRounds { get; init; }
     /// <summary>Real elections this node started (a PreVote majority said yes): each one raises the term.</summary>
     public long ElectionsStarted { get; init; }
+    /// <summary>Leadership transfers this node completed as leader (it handed over) and as target (it took over).</summary>
+    public long TransfersOut { get; init; }
+    public long TransfersIn { get; init; }
+    /// <summary>Set while this leader is handing over: the server it is handing over to.</summary>
+    public string? TransferringTo { get; init; }
 }
 
 /// <summary>
@@ -118,7 +138,11 @@ public sealed class RaftNode : IDisposable
     private DateTime _lastHeard = DateTime.UtcNow;
     private TimeSpan _electionDeadline;
     private long _appendCalls, _appendEntriesSent;
-    private long _preVotes, _elections;
+    private long _preVotes, _elections, _transfersOut, _transfersIn;
+    /// <summary>Leader: handing over to this server; new writes are refused meanwhile (they would delay the hand-over).</summary>
+    private string? _transferTarget;
+    /// <summary>Follower: the leader asked us to take over; the election loop starts an election at once, skipping PreVote.</summary>
+    private bool _campaignNow;
     private TaskCompletionSource _commitSignal = NewSignal();
     private TaskCompletionSource _appendSignal = NewSignal();
     private readonly SemaphoreSlim _applyWake = new(0);
@@ -230,11 +254,13 @@ public sealed class RaftNode : IDisposable
         while (!_stop.IsCancellationRequested)
         {
             try { await Task.Delay(50, _stop.Token); } catch (OperationCanceledException) { return; }
-            bool start;
+            bool start, transfer;
             lock (_gate)
             {
+                transfer = _campaignNow && _role != RaftRole.Leader && IsVoterUnsafe;
+                _campaignNow = false;
                 // Only voters run elections: a joining server waits to be added, a removed server stays quiet.
-                start = _role != RaftRole.Leader && IsVoterUnsafe && DateTime.UtcNow - _lastHeard > _electionDeadline;
+                start = transfer || (_role != RaftRole.Leader && IsVoterUnsafe && DateTime.UtcNow - _lastHeard > _electionDeadline);
                 // Check quorum: a leader that cannot reach a majority steps down, so a cut-off leader stops serving clients.
                 if (_role == RaftRole.Leader && _members.Count > 1 && DateTime.UtcNow - _leaderSince > _options.ElectionTimeout)
                 {
@@ -243,7 +269,7 @@ public sealed class RaftNode : IDisposable
                     if (reachable < Majority) StepDownUnsafe(_log.CurrentTerm);
                 }
             }
-            if (start) await RunElectionAsync();
+            if (start) await RunElectionAsync(transfer);
         }
     }
 
@@ -294,6 +320,127 @@ public sealed class RaftNode : IDisposable
             return _role != RaftRole.Leader && _leaderId is null && _log.CurrentTerm == term && IsVoterUnsafe;
     }
 
+    // ================================================================== leadership transfer (Raft thesis §3.10)
+
+    /// <summary>
+    /// Hand the leader role to another voter, e.g. before restarting this server: new writes are refused (clients retry),
+    /// the target is brought up to date, then told to start an election at once. It wins without waiting for a timeout, so
+    /// clients see a pause of one round trip instead of an election timeout. If it has not taken over within an election
+    /// timeout, the transfer is abandoned and this server keeps leading (etcd, HashiCorp Raft and Ratis work the same way).
+    /// </summary>
+    /// <param name="targetId">The server to hand over to; <c>null</c> picks the most up-to-date voter.</param>
+    /// <param name="ct">Stops waiting (the transfer is then abandoned).</param>
+    /// <returns>The id of the new leader.</returns>
+    public async Task<string> TransferLeadershipAsync(string? targetId, CancellationToken ct = default)
+    {
+        ClusterMember target;
+        long term;
+        lock (_gate)
+        {
+            if (_role != RaftRole.Leader || !_leaderReady)
+                throw new NexusException(NexusErrorCode.Standby, "Leadership can only be handed over by the cluster leader.");
+            if (_transferTarget is not null)
+                throw new NexusException(NexusErrorCode.BadRequest, $"A hand-over to {_transferTarget} is already in progress.");
+            var peers = PeersUnsafe.ToList();
+            if (targetId is null)
+                target = peers.OrderByDescending(p => _matchIndex.GetValueOrDefault(p.Id))
+                              .ThenByDescending(p => _lastAck.GetValueOrDefault(p.Id)).FirstOrDefault()
+                         ?? throw new NexusException(NexusErrorCode.BadRequest, "There is no other voting server to hand over to.");
+            else if (targetId == _id)
+                throw new NexusException(NexusErrorCode.BadRequest, $"{_id} is already the leader.");
+            else
+                target = peers.FirstOrDefault(p => p.Id == targetId)
+                         ?? throw new NexusException(NexusErrorCode.BadRequest, $"'{targetId}' is not a voting member of the cluster.");
+            _transferTarget = target.Id;
+            term = _log.CurrentTerm;
+            SignalAppendUnsafe();
+        }
+
+        var deadline = DateTime.UtcNow + _options.ElectionTimeout + _options.ElectionTimeout; // catch up, then one election
+        var sent = false;
+        string? failure = null;
+        try
+        {
+            while (DateTime.UtcNow < deadline && !ct.IsCancellationRequested)
+            {
+                TimeoutNowRequest? request = null;
+                lock (_gate)
+                {
+                    if (_role != RaftRole.Leader || _log.CurrentTerm != term) break; // someone took over
+                    if (!sent && _log.DurableIndex >= _log.LastIndex && _matchIndex.GetValueOrDefault(target.Id) >= _log.LastIndex)
+                        request = new TimeoutNowRequest(term, _id, _log.LastIndex);
+                }
+                if (request is not null)
+                {
+                    sent = true;
+                    var answer = await SendTimeoutNowAsync(target, request);
+                    if (answer is not { Accepted: true })
+                    {
+                        failure = answer is null
+                            ? $"{target.Id} did not answer or runs a version without leadership transfer."
+                            : $"{target.Id} declined: {answer.Reason}";
+                        break;
+                    }
+                }
+                await Task.Delay(10, ct).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) { }
+        finally
+        {
+            lock (_gate) if (_role == RaftRole.Leader && _transferTarget == target.Id) _transferTarget = null;
+        }
+
+        lock (_gate)
+        {
+            if (_role == RaftRole.Leader && _log.CurrentTerm == term)
+                throw new NexusException(NexusErrorCode.NotCommitted,
+                    failure ?? $"{target.Id} did not take over in time; {_id} stays the leader.");
+            Interlocked.Increment(ref _transfersOut);
+        }
+        // Report who leads now: normally the target, which tells us within a heartbeat or two. (A server that is shutting down
+        // may no longer hear from it, so don't wait long.)
+        var until = DateTime.UtcNow + TimeSpan.FromTicks(Math.Min(_options.ElectionTimeout.Ticks, _options.HeartbeatInterval.Ticks * 3));
+        while (DateTime.UtcNow < until)
+        {
+            lock (_gate) if (_leaderId is not null) return _leaderId;
+            await Task.Delay(10, CancellationToken.None);
+        }
+        return target.Id;
+    }
+
+    private async Task<TimeoutNowResponse?> SendTimeoutNowAsync(ClusterMember target, TimeoutNowRequest request)
+    {
+        try
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_stop.Token);
+            timeout.CancelAfter(_options.ElectionTimeout);
+            return await _transport.TimeoutNowAsync(target, request, timeout.Token);
+        }
+        catch { return null; }
+    }
+
+    /// <summary>
+    /// The leader asks us to take over. Only accepted from our current leader, in its term, once our log has everything the
+    /// leader had when it asked: a late or stray request (raft-rs issue 234) cannot start an election out of turn.
+    /// </summary>
+    public TimeoutNowResponse HandleTimeoutNow(TimeoutNowRequest req)
+    {
+        lock (_gate)
+        {
+            string? reason = null;
+            if (_stop.IsCancellationRequested) reason = "this server is shutting down";
+            else if (req.Term != _log.CurrentTerm) reason = $"term {req.Term} is not the current term {_log.CurrentTerm}";
+            else if (_role == RaftRole.Leader) reason = "this server is already the leader";
+            else if (!IsVoterUnsafe) reason = "this server is not a voting member";
+            else if (_log.LastIndex < req.LastLogIndex) reason = $"this server's log is behind ({_log.LastIndex} < {req.LastLogIndex})";
+            else if (_leaderId is not null && _leaderId != req.LeaderId) reason = $"this server follows {_leaderId}, not {req.LeaderId}";
+            if (reason is not null) return new TimeoutNowResponse(_log.CurrentTerm, false, reason);
+            _campaignNow = true;
+            return new TimeoutNowResponse(_log.CurrentTerm, true);
+        }
+    }
+
     /// <summary>Answer a PreVote: the same checks as a real vote, but nothing is changed or recorded.</summary>
     public VoteResponse HandlePreVote(VoteRequest req)
     {
@@ -302,13 +449,15 @@ public sealed class RaftNode : IDisposable
             var inTouchWithLeader = _role == RaftRole.Leader
                                     || (_leaderId is not null && DateTime.UtcNow - _lastHeard < _options.ElectionTimeout);
             var upToDate = req.LastLogTerm > _log.LastTerm || (req.LastLogTerm == _log.LastTerm && req.LastLogIndex >= _log.LastIndex);
-            return new VoteResponse(_log.CurrentTerm, !inTouchWithLeader && req.Term > _log.CurrentTerm && upToDate);
+            return new VoteResponse(_log.CurrentTerm,
+                !_stop.IsCancellationRequested && !inTouchWithLeader && req.Term > _log.CurrentTerm && upToDate);
         }
     }
 
-    private async Task RunElectionAsync()
+    /// <param name="transfer">The leader handed over to us: no PreVote, and voters skip their leader check.</param>
+    private async Task RunElectionAsync(bool transfer = false)
     {
-        if (!await PreVoteAsync()) return;
+        if (!transfer && _options.PreVote && !await PreVoteAsync()) return;
         Interlocked.Increment(ref _elections);
         VoteRequest request;
         long term;
@@ -321,7 +470,7 @@ public sealed class RaftNode : IDisposable
             _role = RaftRole.Candidate;
             _leaderId = null;
             ResetElectionTimer();
-            request = new VoteRequest(term, _id, _log.LastIndex, _log.LastTerm);
+            request = new VoteRequest(term, _id, _log.LastIndex, _log.LastTerm, transfer);
             peers = [.. PeersUnsafe];
             majority = Majority;
         }
@@ -346,6 +495,7 @@ public sealed class RaftNode : IDisposable
             if (r.Granted && ++votes >= majority)
             {
                 BecomeLeader(term);
+                if (transfer) Interlocked.Increment(ref _transfersIn);
                 return;
             }
         }
@@ -359,7 +509,12 @@ public sealed class RaftNode : IDisposable
             // removed from the cluster and keeps timing out) instead of letting them bump the term and disrupt everyone.
             var inTouchWithLeader = _role == RaftRole.Leader
                                     || (_leaderId is not null && DateTime.UtcNow - _lastHeard < _options.ElectionTimeout);
-            if (req.Term > _log.CurrentTerm && inTouchWithLeader) return new VoteResponse(_log.CurrentTerm, false);
+            // A transfer candidate was sent by the leader itself, so the leader check does not apply to it. The leader
+            // only lets through the server it is handing over to.
+            var handOver = req.Transfer && (_role != RaftRole.Leader || _transferTarget == req.CandidateId);
+            // A server that has stopped (shutting down) takes no part, as if it were already gone.
+            if (_stop.IsCancellationRequested) return new VoteResponse(_log.CurrentTerm, false);
+            if (req.Term > _log.CurrentTerm && inTouchWithLeader && !handOver) return new VoteResponse(_log.CurrentTerm, false);
 
             if (req.Term < _log.CurrentTerm) return new VoteResponse(_log.CurrentTerm, false);
             if (req.Term > _log.CurrentTerm) StepDownUnsafe(req.Term);
@@ -415,6 +570,7 @@ public sealed class RaftNode : IDisposable
         if (_role == RaftRole.Leader) _leaderId = null;
         _role = RaftRole.Follower;
         _leaderReady = false;
+        _transferTarget = null;
         _noopIndex = long.MaxValue;
         _learners.Clear();
         ResetElectionTimer();
@@ -431,6 +587,8 @@ public sealed class RaftNode : IDisposable
         {
             if (_role != RaftRole.Leader)
                 throw new NexusException(NexusErrorCode.Standby, "This node is no longer the cluster leader.");
+            if (_transferTarget is not null)
+                throw new NexusException(NexusErrorCode.Standby, "The leader is handing over to another server; retry in a moment.");
             var entry = new RaftEntry { Index = _log.LastIndex + 1, Term = _log.CurrentTerm, Op = op };
             _log.Append(entry);
             SignalAppendUnsafe();
@@ -640,7 +798,15 @@ public sealed class RaftNode : IDisposable
                 SignalCommitUnsafe();
                 _applyWake.Release();
                 // A leader removed from the membership leads until that change commits, then steps aside.
-                if (!IsVoterUnsafe && _configIndex <= _commitIndex) StepDownUnsafe(_log.CurrentTerm);
+                if (!IsVoterUnsafe && _configIndex <= _commitIndex)
+                {
+                    // Hand over to the most caught-up member straight away instead of leaving them to time out.
+                    var next = PeersUnsafe.OrderByDescending(p => _matchIndex.GetValueOrDefault(p.Id)).FirstOrDefault();
+                    var req = new TimeoutNowRequest(_log.CurrentTerm, _id, _matchIndex.GetValueOrDefault(next?.Id ?? ""));
+                    StepDownUnsafe(_log.CurrentTerm);
+                    _leaderId = null;
+                    if (next is not null) _ = SendTimeoutNowAsync(next, req);
+                }
                 break;
             }
         }
@@ -761,6 +927,8 @@ public sealed class RaftNode : IDisposable
             throw new NexusException(NexusErrorCode.Standby, "Membership changes must be made on the cluster leader.");
         if (_configIndex > _commitIndex)
             throw new NexusException(NexusErrorCode.BadRequest, "Another membership change is still in progress; try again shortly.");
+        if (_transferTarget is not null)
+            throw new NexusException(NexusErrorCode.Standby, "The leader is handing over to another server; retry in a moment.");
     }
 
     private async Task AppendConfigAsync(Func<List<ClusterMember>, List<ClusterMember>> change, CancellationToken ct)
@@ -967,9 +1135,26 @@ public sealed class RaftNode : IDisposable
                 AppendCallsSent = Interlocked.Read(ref _appendCalls),
                 AppendEntriesSent = Interlocked.Read(ref _appendEntriesSent),
                 PreVoteRounds = Interlocked.Read(ref _preVotes),
-                ElectionsStarted = Interlocked.Read(ref _elections)
+                ElectionsStarted = Interlocked.Read(ref _elections),
+                TransfersOut = Interlocked.Read(ref _transfersOut),
+                TransfersIn = Interlocked.Read(ref _transfersIn),
+                TransferringTo = _transferTarget
             };
         }
+    }
+
+    /// <summary>
+    /// Stop taking part (no heartbeats, votes, elections or replication) without closing the log, e.g. while the host shuts
+    /// down. Requests from other servers are still answered from the log until <see cref="Dispose"/>.
+    /// </summary>
+    public void Stop()
+    {
+        lock (_gate)
+        {
+            if (_stop.IsCancellationRequested) return;
+            if (_role == RaftRole.Leader) StepDownUnsafe(_log.CurrentTerm);
+        }
+        _stop.Cancel();
     }
 
     public void Dispose()

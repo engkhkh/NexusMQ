@@ -344,7 +344,8 @@ function renderRaft(st, c) {
     const ms = self ? 0 : c.peerLastContactMs[m.id];
     const [color, label] = self ? ['var(--ok)', 'ok'] : health(ms);
     const action = role === 'Learner' ? '<span class="muted">catching up…</span>'
-      : `<button class="ghost" data-id="${esc(m.id)}" onclick="removeMember(this.dataset.id, ${self})">remove</button>`;
+      : (self ? '' : `<button class="ghost" data-id="${esc(m.id)}" title="Hand the leader role to this server (e.g. before restarting the leader)" onclick="makeLeader(this.dataset.id)">make leader</button> `)
+        + `<button class="ghost" data-id="${esc(m.id)}" onclick="removeMember(this.dataset.id, ${self})">remove</button>`;
     return `<tr><td>${esc(m.id)}${self ? ' <span class="tag">this</span>' : ''}</td><td>${esc(m.url || '')}</td><td>${self ? '<b>Leader</b>' : role}</td>
       <td><span class="dot" style="background:${color}"></span>${label}</td><td class="num">${behind}</td><td>${self ? '–' : ago(ms)}</td><td>${action}</td></tr>`;
   };
@@ -388,6 +389,16 @@ async function addMember() {
   try { await call('POST', '/api/cluster/members', { id, url }); toast(`Server ${id} joined the cluster`); $('cId').value = $('cUrl').value = ''; }
   catch (e) { toast(e.message, true); }
   finally { btn.disabled = false; btn.textContent = 'Add server'; loadCluster(); }
+}
+async function makeLeader(id) {
+  if (!confirm(`Hand the leader role to "${id}"?\n\nWrites pause for a moment while it takes over; clients follow it by themselves. Use this before restarting or updating this server.`)) return;
+  try {
+    const r = await call('POST', `/api/cluster/leader/transfer?to=${encodeURIComponent(id)}`);
+    const link = dashboardOn(r.url);
+    toast(`${r.leader} is now the leader`);
+    if (link) showBanner(`<b>${esc(r.leader)}</b> is now the leader. Open <a href="${esc(link)}">its dashboard</a> to manage messages.`);
+  } catch (e) { toast(e.message, true); }
+  loadCluster();
 }
 async function removeMember(id, self) {
   const msg = self

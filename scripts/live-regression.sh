@@ -203,6 +203,47 @@ id_of_mx() { case "$1" in 5733) echo x;; 5734) echo y;; 5735) echo z;; esac; }
 port_of_id() { case "$1" in a) echo 5720;; b) echo 5721;; c) echo 5722;; d) echo 5723;; esac; }
 wait_leader() { for _ in $(seq 1 40); do for p in "$@"; do L=$(leader_port "$p" 2>/dev/null); [[ -n "$L" ]] && { echo "$L"; return 0; }; done; sleep 0.5; done; return 1; }
 
+if want restart; then
+  say "Raft cluster: planned leader restart (clean stop hands over) and nexusmq cluster transfer"
+  rs_env() {
+    echo NexusMQ__ApiKey=master NexusMQ__Cluster__NodeId="$1" NexusMQ__Cluster__Secret=regression-secret \
+      NexusMQ__Cluster__Nodes__0__Id=r1 NexusMQ__Cluster__Nodes__0__Url=http://localhost:5745 \
+      NexusMQ__Cluster__Nodes__1__Id=r2 NexusMQ__Cluster__Nodes__1__Url=http://localhost:5746 \
+      NexusMQ__Cluster__Nodes__2__Id=r3 NexusMQ__Cluster__Nodes__2__Url=http://localhost:5747
+  }
+  rs_id() { echo "r$(( $1 - 5744 ))"; }
+  # shellcheck disable=SC2046
+  { start r1 5745 $(rs_env r1); start r2 5746 $(rs_env r2); start r3 5747 $(rs_env r3); }
+  RS="http://localhost:5745,http://localhost:5746,http://localhost:5747"
+  LP=$(wait_leader 5745 5746 5747); check "a leader was elected" test -n "$LP"
+  cli --url "$RS" --key master create queue chaos >/dev/null
+  dotnet "$CHAOS_DLL" "$RS" master 16 chaos > "$WORK/restart-chaos.log" 2>&1 &
+  CHAOS_PID=$!
+  sleep 6
+  LID=$(rs_id "$LP"); T0=$(date +%s%3N)
+  pkill -TERM -f "urls http://localhost:$LP"          # a clean stop, like a service stop or docker stop
+  while pgrep -f "urls http://localhost:$LP" > /dev/null; do sleep 0.1; done
+  STOP_MS=$(( $(date +%s%3N) - T0 ))
+  # shellcheck disable=SC2046
+  start "$LID" "$LP" $(rs_env "$LID")                 # and back
+  wait "$CHAOS_PID"; RC=$?
+  SUMMARY=$(grep SUMMARY "$WORK/restart-chaos.log"); echo "    $SUMMARY stopTook=${STOP_MS}ms"
+  PAUSE=$(grep -o 'longestPauseMs=[0-9]*' <<< "$SUMMARY" | cut -d= -f2)
+  check "the stopping leader handed over first" grep -q "handed the leader role" "$WORK/$LID.log"
+  check "it stopped within 5 s (was 30 s before 1.19)" test "$STOP_MS" -lt 5000
+  check "writes paused under 1.5 s (an election alone takes 1.5 s or more)" test "${PAUSE:-99999}" -lt 1500
+  check "no confirmed message lost or duplicated, no send failed" bash -c "[[ $RC == 0 ]] && grep -q 'sendErrors=0' <<< '$SUMMARY'"
+
+  LP=$(wait_leader 5745 5746 5747)
+  TARGET=$(for p in 5745 5746 5747; do [[ $p != "$LP" ]] && { rs_id $p; break; }; done)
+  OUT=$(cli --url "$RS" --key master cluster transfer "$TARGET" 2>&1)
+  echo "    $OUT"
+  check "nexusmq cluster transfer hands over to the chosen server" grep -q "^$TARGET is now the leader" <<< "$OUT"
+  check "the chosen server leads" test "$(rs_id "$(wait_leader 5745 5746 5747)")" = "$TARGET"
+  check "writes go on after the transfer" test "$(cli --url "$RS" --key master send chaos after-transfer >/dev/null 2>&1; echo $?)" = 0
+  for n in r1 r2 r3; do pkill -9 -f "urls http://localhost:$(( 5744 + ${n#r} ))"; done
+fi
+
 if want cluster; then
   say "Raft cluster: 3 servers, hard-kill the leader under traffic"
   # shellcheck disable=SC2046

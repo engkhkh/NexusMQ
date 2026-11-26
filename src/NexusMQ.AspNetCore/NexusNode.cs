@@ -170,7 +170,8 @@ public sealed class NexusNode : IDisposable
                     HeartbeatInterval = TimeSpan.FromMilliseconds(ClusterOptions.HeartbeatMs),
                     MaxLogEntries = ClusterOptions.MaxLogEntries,
                     MaxInflightAppends = ClusterOptions.MaxInflightAppends,
-                    JoinExisting = ClusterOptions.Join
+                    JoinExisting = ClusterOptions.Join,
+                    PreVote = ClusterOptions.PreVote
                 })
             {
                 KeysApplied = json => _auth.ReplaceKeys(json),
@@ -308,8 +309,14 @@ public sealed class NexusNode : IDisposable
         };
     }
 
+    private readonly CancellationTokenSource _closing = new();
+    /// <summary>Cancelled when the server shuts down, after any leader hand-over: long-lived connections end then.</summary>
+    public CancellationToken Closing => _closing.Token;
+    internal void SignalClosing() { try { _closing.Cancel(); } catch (ObjectDisposedException) { } }
+
     public void Dispose()
     {
+        SignalClosing();
         Raft?.Dispose();
         (_transport as IDisposable)?.Dispose();
         _broker?.Dispose();
@@ -357,7 +364,8 @@ internal static class NexusReplicationStream
         var id = Guid.NewGuid();
         var info = new StandbyConnectionInfo { RemoteIp = http.Connection.RemoteIpAddress?.ToString(), ConnectedUtc = DateTimeOffset.UtcNow };
         node.Standbys[id] = info;
-        var ct = http.RequestAborted;
+        using var shutdown = NexusShutdown.Linked(http);
+        var ct = shutdown.Token;
         try
         {
             // Read loop only to notice the standby closing the socket.
@@ -420,6 +428,57 @@ internal static class NexusReplicationStream
 }
 
 /// <summary>Standby side: follows the primary's stream into local storage, and promotes on silence when AutoFailover is on.</summary>
+/// <summary>
+/// On a clean shutdown of the cluster leader, hand the leader role to another server before this one goes away
+/// (<see cref="NexusClusterOptions.TransferLeadershipOnShutdown"/>). Runs on ApplicationStopping, while this server still
+/// answers its peers; if the hand-over fails the others elect a leader as usual.
+/// </summary>
+internal static class NexusShutdown
+{
+    /// <summary>
+    /// Ends when the request is aborted OR this server starts shutting down. Long-lived sockets (other servers' Raft links,
+    /// clients' push connections, a standby's stream) only end when the other side closes them, and the web host waits up
+    /// to 30 s for them on shutdown; ending them at once lets the server stop in moments and the clients move on.
+    /// </summary>
+    public static CancellationTokenSource Linked(HttpContext http) =>
+        CancellationTokenSource.CreateLinkedTokenSource(http.RequestAborted, http.RequestServices.GetRequiredService<NexusNode>().Closing);
+}
+
+internal sealed class NexusShutdownService(NexusNode node, IHostApplicationLifetime lifetime, ILogger<NexusShutdownService> log)
+    : IHostedService
+{
+    public Task StartAsync(CancellationToken cancellationToken)
+    {
+        // One hook, in this order: hand over (needs the links to the other servers), stop Raft, then close the long-lived
+        // connections. (Separate hooks would run newest first and close the links before the hand-over.)
+        lifetime.ApplicationStopping.Register(() =>
+        {
+            if (node.Raft is { } raft)
+            {
+                if (node.ClusterOptions.TransferLeadershipOnShutdown && raft.Status() is { Role: RaftRole.Leader, LeaderReady: true })
+                {
+                    try
+                    {
+                        var leader = raft.TransferLeadershipAsync(null).GetAwaiter().GetResult();
+                        log.LogInformation("Shutting down: handed the leader role to {Leader}.", leader);
+                    }
+                    catch (Exception ex)
+                    {
+                        log.LogWarning("Shutting down: could not hand over the leader role ({Reason}); the others will elect a leader.", ex.Message);
+                    }
+                }
+                // From here this server no longer answers clients, so it must not keep the cluster waiting on it either:
+                // no more heartbeats, votes or elections (as if it had stopped), while the host finishes shutting down.
+                raft.Stop();
+            }
+            node.SignalClosing();
+        });
+        return Task.CompletedTask;
+    }
+
+    public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+}
+
 internal sealed class NexusStandbyService(NexusNode node, ILogger<NexusStandbyService> log) : BackgroundService
 {
     private sealed class Frame

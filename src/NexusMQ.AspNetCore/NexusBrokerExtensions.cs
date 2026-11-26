@@ -49,6 +49,7 @@ public static class NexusBrokerExtensions
         // On a standby this throws (not cached) until promotion; the standby guard answers 503 before endpoints run.
         services.AddSingleton(sp => sp.GetRequiredService<NexusNode>().Broker);
         services.AddHostedService<NexusStandbyService>();
+        services.AddHostedService<NexusShutdownService>();
         services.AddSingleton(sp =>
         {
             var opts = sp.GetRequiredService<IOptions<NexusServerOptions>>().Value;
@@ -212,6 +213,14 @@ public static class NexusBrokerExtensions
             if (node.Raft is null) throw new NexusException(NexusErrorCode.BadRequest, "This server is not running in cluster mode.");
             await node.Raft.RemoveServerAsync(id, http.RequestAborted);
             return Results.Ok(node.Raft.Status().Members);
+        });
+        // Leadership transfer: hand the leader role to another server (all of them if none is named: the most up to date).
+        api.MapPost("/cluster/leader/transfer", async (NexusNode node, string? to, HttpContext http) =>
+        {
+            if (node.Raft is null) throw new NexusException(NexusErrorCode.BadRequest, "This server is not running in cluster mode.");
+            var leader = await node.Raft.TransferLeadershipAsync(string.IsNullOrWhiteSpace(to) ? null : to, http.RequestAborted);
+            var url = node.Raft.Status().Members.FirstOrDefault(m => m.Id == leader)?.Url;
+            return Results.Ok(new { leader, url });
         });
         api.MapPost("/replication/promote", (NexusNode node) =>
         {
