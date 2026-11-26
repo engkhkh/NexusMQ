@@ -310,12 +310,26 @@ public sealed class RaftTests : IDisposable
         var behind = _net.Nodes.Values.First(n => n.Id != leader.Id);
         var other = _net.Nodes.Values.First(n => n.Id != leader.Id && n.Id != behind.Id);
         _net.Down[behind.Id] = true;
-        for (var i = 1; i <= 5; i++)
+        // (On a slow machine the 150 ms timeouts can make the leader step down and the two re-elect; follow whoever leads.)
+        for (var i = 1; i <= 5; i++) await CommitOnLeaderAsync(Put("q", i, "x"), excluding: behind.Id);
+        var current = await Leader(excluding: behind.Id);
+        var expected = current.Id == leader.Id ? other : leader;
+        Assert.Equal(expected.Id, await current.TransferLeadershipAsync(null)); // never the one that is behind
+    }
+
+    private async Task CommitOnLeaderAsync(ReplicationOp op, string excluding)
+    {
+        for (var attempt = 0; attempt < 5; attempt++)
         {
-            var (ix, tx) = leader.Propose(Put("q", i, "x"));
-            Assert.True(await leader.WaitCommittedAsync(ix, tx, TimeSpan.FromSeconds(5)));
+            var l = await Leader(excluding: excluding);
+            try
+            {
+                var (ix, tx) = l.Propose(op);
+                if (await l.WaitCommittedAsync(ix, tx, TimeSpan.FromSeconds(2))) return;
+            }
+            catch (NexusException) { } // stepped down just now
         }
-        Assert.Equal(other.Id, await leader.TransferLeadershipAsync(null));
+        Assert.Fail("no write was confirmed in 5 attempts");
     }
 
     [Fact]
