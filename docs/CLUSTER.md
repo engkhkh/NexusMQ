@@ -66,7 +66,8 @@ nexusmq --url … cluster members
 - The new server first catches up as a **non-voting learner**: it receives the log, or a snapshot if it is far behind. Only once it is close does it
   become a voter, so adding it never stalls commits. If it can't catch up within 60 s (wrong secret, not reachable, not in join mode), the add
   fails and nothing changes.
-- **Removing the leader** is allowed. It keeps leading until the change commits, then steps aside and the others elect a new leader in about 1 s.
+- **Removing the leader** is allowed. It keeps leading until the change commits, then hands over to the most up-to-date server
+  (about 0.2 s of paused writes, measured under traffic).
 - A removed server goes quiet: it no longer starts elections, and the remaining servers ignore its vote requests while they hear from their leader,
   so a forgotten server can't disrupt the cluster.
 - API: `GET/POST /api/cluster/members`, `DELETE /api/cluster/members/{id}` (broker-wide Manage).
@@ -143,11 +144,11 @@ through the log, so it has no read path that needs a lease.
 Open any server's dashboard (`http://<server>:5680/`). The **Servers** panel at the top shows the cluster:
 - **On the leader:** each server with its role, health (green ok, amber slow, red unreachable), how many log entries it is behind, and when it last
   answered. The panel also shows how many voters are reachable against the majority, in amber when one more failure would stop writes.
-  **Add server** and **remove** do the same as `nexusmq cluster add/remove` (remove the leader itself to hand over before maintenance).
+  **Add server**, **make leader** and **remove** do the same as `nexusmq cluster add / transfer / remove`.
 - **On a follower:** a link to the leader's dashboard. Messages and servers are managed there.
 - **On a removed server:** a note that it is no longer a member, with links to the members.
 
-The panel needs a key with Monitor rights (Manage to add or remove servers).
+The panel needs a key with Monitor rights (Manage to add, remove or make leader).
 
 ## Clients
 
