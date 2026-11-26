@@ -153,7 +153,7 @@ jobs:
         shell: bash
         run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/nexusmq" >> "$GITHUB_ENV"
 
-      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-qemu-action@v4
       - uses: docker/setup-buildx-action@v4
 
       - uses: docker/login-action@v4
