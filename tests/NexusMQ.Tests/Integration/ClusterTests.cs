@@ -144,6 +144,9 @@ public sealed class ClusterTests : IDisposable
         using var socket = new WebSocketRaftTransport(options);
         using var http = new HttpRaftTransport(options);
         IRaftTransport t = transport == "socket" ? socket : http;
+        // Both followers must already follow this leader (right after a restart one may not have heard from it yet, and a
+        // server without a leader rightly says yes).
+        for (var i = 0; i < 100 && _ports.Keys.Any(id => id != leader && Status(id).LeaderId != leader); i++) await Task.Delay(50);
 
         var before = Status(follower);
         var probe = new VoteRequest(before.Term + 10, "intruder", long.MaxValue, long.MaxValue);
